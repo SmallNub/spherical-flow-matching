@@ -1,0 +1,45 @@
+# system / home
+.*
+
+# exceptions (allow these)
+!.gitignore
+!requirements.txt
+!riemannian-fm/
+!HAE/
+!hyper_env.yaml
+!HAE/proj/extract_animalfaces.py
+
+# python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# data & outputs
+Sidechain-auto-encoder/
+HAE/FID/flowers_test/
+HAE/FID/flowers_train/
+HAE/FID/fm_samples_flowers_1020_euc/
+HAE/FID/fm_samples0.5/
+HAE/FID/fm_samples2/
+HAE/FID/fm_samples3/
+HAE/FID/fm_samples5/
+HAE/FID/hfm_samples_flowers_1_100/
+HAE/FID/hfm_samples_flowers_1_1020/
+HAE/FID/hfm_samples_flowers_1_1020_in/
+HAE/FID/hfm_samples_flowers_1_1020_last/
+HAE/FID/hfm_samples_flowers_1_1020_last_0.03/
+HAE/inference_images/
+HAE/logs/
+HAE/output/
+HAE/output_gpu/
+HAE/pretrained_models/
+HAE/proj/
+HAE/traj_images/
+HAE/Visualization/embeddings/
+HAE/wandb/
+riemannian-fm/logs/
+riemannian-fm/outputs/
+
+
+
+

@@ -18,10 +18,15 @@ dependencies:
   - matplotlib
   - seaborn
   - scikit-learn
-  - ipython
-  - ipykernel
   - tqdm
   - pyyaml
+  - ipython
+  - ipykernel
+  - jupyter
+  - igl
+  - meshplot
+  - geopandas
+  - torchmetrics
   - pip:
       - einops
       - timm
@@ -36,3 +41,14 @@ dependencies:
       - opencv-python
       - huggingface-hub
       - safetensors
+      - submitit
+      - pre-commit
+      - black==22.6.0
+      - hydra-core==1.2.0
+      - hydra-submitit-launcher==1.2.0
+      - hydra_colorlog==1.2.0
+      - torchdiffeq
+      - biopython
+      - pyevtk
+      - ipympl
+      - click

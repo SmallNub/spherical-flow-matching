@@ -17,7 +17,7 @@ from functools import partial
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import transforms
 from torchvision.datasets.folder import default_loader
 
@@ -269,14 +269,99 @@ def create_loader(
         load_from_zip=load_from_zip,
     )
     logger.info(f"number of samples in train dataset: {len(train_dataset)}")
+
+    val_loader = None
+    train_dataset_for_build = train_dataset
+
+    if not train_only:
+        val_transform = transforms.Compose(
+            [
+                partial(center_crop_arr, image_size=image_size),
+                transforms.ToTensor(),
+                transforms.Normalize(aug_mean, aug_std),
+            ]
+        )
+
+        val_dataset = None
+        try:
+            import inspect
+
+            if dataset_cls == ListDataset or "split" in inspect.signature(dataset_cls).parameters:
+                val_dataset = create_dataset(
+                    dataset_cls,
+                    root=dataset_dir,
+                    split="val",
+                    download=True,
+                    transform=val_transform,
+                    max_samples=max_samples if dataset_cls == ListDataset else -1,
+                    load_from_zip=load_from_zip if dataset_cls == ListDataset else False,
+                )
+
+            if val_dataset is None or len(val_dataset) == 0:
+                raise RuntimeError("no val split available")
+
+            logger.info(f"number of samples in val dataset: {len(val_dataset)}")
+        except Exception as exc:
+            logger.info(f"validation split not available, falling back to 10% of train: {exc}")
+            total_train = len(train_dataset)
+            val_size = max(1, int(total_train * 0.1))
+            if val_size >= total_train:
+                val_size = total_train // 10 or 1
+            indices = torch.randperm(total_train, generator=torch.Generator().manual_seed(42)).tolist()
+            val_indices = indices[:val_size]
+            train_indices = indices[val_size:]
+
+            if len(train_indices) == 0:
+                raise RuntimeError("training dataset is too small to split for validation")
+
+            train_dataset_for_build = Subset(train_dataset, train_indices)
+
+            if dataset_cls == ListDataset:
+                val_dataset = create_dataset(
+                    dataset_cls,
+                    root=dataset_dir,
+                    split="train",
+                    download=True,
+                    transform=val_transform,
+                    max_samples=-1,
+                    load_from_zip=load_from_zip,
+                )
+                val_dataset.list = [train_dataset.list[i] for i in val_indices]
+            else:
+                raw_val_dataset = create_dataset(
+                    dataset_cls,
+                    root=dataset_dir,
+                    split="train",
+                    download=True,
+                    transform=val_transform,
+                )
+                val_dataset = Subset(raw_val_dataset, val_indices)
+
+            logger.info(f"fallback val dataset size: {len(val_dataset)}")
+
+        if val_dataset is not None and len(val_dataset) > 0:
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=batch_size_per_rank,
+                sampler=torch.utils.data.DistributedSampler(
+                    val_dataset,
+                    num_replicas=ddp_world_size,
+                    rank=ddp_rank,
+                    shuffle=False,
+                ),
+                pin_memory=pin_mem,
+                num_workers=num_workers,
+                persistent_workers=True if num_workers > 0 else False,
+            )
+
     train_sampler = torch.utils.data.DistributedSampler(
-        train_dataset,
+        train_dataset_for_build,
         num_replicas=ddp_world_size,
         rank=ddp_rank,
         shuffle=shuffle,
     )
     train_loader = DataLoader(
-        train_dataset,
+        train_dataset_for_build,
         batch_size=batch_size_per_rank,
         sampler=train_sampler,
         pin_memory=pin_mem,
@@ -317,6 +402,49 @@ def create_loader(
         num_workers=num_workers,
         persistent_workers=True if num_workers > 0 else False,
     )
+
+    val_loader = None
+    try:
+        import inspect
+
+        val_dataset = None
+        if dataset_cls == ListDataset or "split" in inspect.signature(dataset_cls).parameters:
+            kwargs = {
+                "root": dataset_dir,
+                "split": "val",
+                "download": True,
+                "transform": transforms.Compose(
+                    [
+                        partial(center_crop_arr, image_size=image_size),
+                        transforms.ToTensor(),
+                        transforms.Normalize(aug_mean, aug_std),
+                    ]
+                ),
+            }
+            if dataset_cls == ListDataset:
+                kwargs["max_samples"] = max_samples
+                kwargs["load_from_zip"] = load_from_zip
+
+            val_dataset = create_dataset(dataset_cls, **kwargs)
+
+        if val_dataset is not None and len(val_dataset) > 0:
+            logger.info(f"number of samples in val dataset: {len(val_dataset)}")
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=batch_size_per_rank,
+                sampler=torch.utils.data.DistributedSampler(
+                    val_dataset,
+                    num_replicas=ddp_world_size,
+                    rank=ddp_rank,
+                    shuffle=False,
+                ),
+                pin_memory=pin_mem,
+                num_workers=num_workers,
+                persistent_workers=True if num_workers > 0 else False,
+            )
+    except Exception as exc:
+        logger.info(f"validation split not available: {exc}")
+
     vis_loader = DataLoader(
         create_dataset(
             dataset_cls,
@@ -340,7 +468,7 @@ def create_loader(
     )
     vis_loader = cycle(vis_loader)
 
-    return train_loader, test_loader, vis_loader, train_sampler
+    return train_loader, val_loader, test_loader, vis_loader, train_sampler
 
 
 def center_crop_arr(pil_image: Image.Image, image_size: int) -> Image.Image:

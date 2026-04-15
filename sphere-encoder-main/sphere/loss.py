@@ -119,6 +119,9 @@ class ReconstructionLoss(nn.Module):
         pix_con_dist_loss = torch.zeros((), device=device)
         pix_con_perc_loss = torch.zeros((), device=device)
 
+        # latent consistency loss
+        lat_con_loss = torch.zeros((), device=device)
+
         if self.pix_con_dist_weight > 0 or self.pix_con_perc_weight > 0:
             assert inp.shape[0] == 2 * tgt.shape[0]
 

@@ -183,12 +183,12 @@ def set_exp_name(args):
     return exp_name
 
 
-def evaluate_loss(model, loader, loss_cls, device, ddp_world_size):
+def evaluate_loss(model, loader, loss_cls, device, ddp_world_size, ctx):
     model.eval()
     total_loss = 0.0
     total_samples = 0
 
-    with torch.no_grad():
+    with ctx, torch.no_grad():
         for data in loader:
             imgs, clss = data[:2]
             imgs = imgs.to(device, non_blocking=True)
@@ -376,7 +376,7 @@ def main(args):
             json.dump(vars(args), f, indent=4)
 
     # build data loader and sampler
-    train_loader, test_loader, vis_loader, train_sampler = create_loader(
+    train_loader, val_loader, test_loader, vis_loader, train_sampler = create_loader(
         dataset_cls,
         osp.join(args.dev_dir, args.data_dir, args.dataset_name),
         args.image_size,
@@ -776,12 +776,16 @@ def main(args):
             )
 
         if args.early_stop_patience > 0:
+            eval_loader = val_loader if val_loader is not None else test_loader
+            if val_loader is not None and ddp_rank0:
+                logger.info("using val_loader for early stopping")
             val_loss = evaluate_loss(
                 model_without_ddp,
-                test_loader,
+                eval_loader,
                 loss_cls,
                 device,
                 ddp_world_size,
+                ctx=ctx,
             )
             if ddp_rank0:
                 logger.info(f"epoch {epoch}: val_loss {val_loss:.5f}")

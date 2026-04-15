@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
@@ -5,7 +6,6 @@
 # LICENSE file in the root directory of this source tree
 
 
-#!/bin/bash
 #SBATCH --job-name=sphere-encoder-cifar10
 #SBATCH --output=slurm/sphere-encoder-cifar10_%j.log
 #SBATCH --error=slurm/sphere-encoder-cifar10_%j.err

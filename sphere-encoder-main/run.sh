@@ -96,7 +96,7 @@ echo "+ HEAD_NODE_IP: $HEAD_NODE_IP"
 echo "+ WORLD_SIZE: $WORLD_SIZE"
 
 # find an available port and use it
-PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close();')
+PORT=$(python -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close();')
 
 # fire up
 set -x
@@ -105,7 +105,7 @@ if [ "$DIST_MODE" == "local" ] && [ $NGPUS -eq 1 ]; then
     export RANK=0
     export LOCAL_RANK=0
     export WORLD_SIZE=1
-    source ~/anaconda3/bin/activate sphere_hyper && python3 $INPUT_SCRIPT $INPUT_ARGVS
+    python $INPUT_SCRIPT $INPUT_ARGVS
 else
     # multi-GPU or distributed training
     $SRUN_CMD torchrun \

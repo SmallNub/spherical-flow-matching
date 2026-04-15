@@ -234,7 +234,8 @@ def visualize(
     if use_ema_model and ema_model is not None:
         ema_model.restore(model_without_ddp)
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()
 
 
 def save_ckpt(
@@ -250,7 +251,8 @@ def save_ckpt(
 ):
     assert ckpt_dir is not None
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()
 
     if ddp_rank0:
         ckpt = {
@@ -278,7 +280,8 @@ def save_ckpt(
             cleanup_checkpoints=True,
         )
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()
 
 
 def load_ckpt(
@@ -293,7 +296,8 @@ def load_ckpt(
     if ckpt_path is None:
         return
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()
 
     logger.info(f"loading checkpoint from {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location="cpu")
@@ -339,7 +343,8 @@ def load_ckpt(
                     "override_model_with_ema is True, but no ema_model to override"
                 )
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()
 
     if return_ckpt:
         return ckpt
@@ -478,7 +483,8 @@ def save_fsdp_ckpt(
 ):
     assert ckpt_dir is not None
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()
 
     # in fsdp_mode, we need to call the state_dict on each rank
     # then stream the overall states on the master rank to save
@@ -498,4 +504,5 @@ def save_fsdp_ckpt(
         torch.save(ckpt, ckpt_path)
         logger.info(f"checkpoint saved to {ckpt_path}")
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()

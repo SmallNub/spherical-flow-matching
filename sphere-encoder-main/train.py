@@ -44,6 +44,12 @@ parser.add_argument("--data_dir", type=str, default="datasets")
 parser.add_argument("--log_interval", type=int, default=100, help="in iterations")
 parser.add_argument("--vis_interval", type=int, default=2, help="in epochs")
 parser.add_argument("--ckpt_save_interval", type=int, default=10, help="in epochs")
+parser.add_argument(
+    "--early_stop_patience",
+    type=int,
+    default=10,
+    help="stop training after this many epochs without validation improvement",
+)
 # --- visualization
 parser.add_argument(
     "--class_of_interest", type=int, nargs="+", default=None, help="for visualization"
@@ -177,6 +183,41 @@ def set_exp_name(args):
     return exp_name
 
 
+def evaluate_loss(model, loader, loss_cls, device, ddp_world_size):
+    model.eval()
+    total_loss = 0.0
+    total_samples = 0
+
+    with torch.no_grad():
+        for data in loader:
+            imgs, clss = data[:2]
+            imgs = imgs.to(device, non_blocking=True)
+            clss = clss.to(device, non_blocking=True)
+
+            rec_imgs, extra_loss, z_noisy, z_clean = model(imgs, clss)
+            loss = loss_cls(
+                input=rec_imgs * 0.5 + 0.5,
+                target=imgs * 0.5 + 0.5,
+                epoch=0,
+                extra_loss=extra_loss,
+                noisy_latent=z_noisy,
+                clean_latent=z_clean,
+            )
+            batch_size = imgs.shape[0]
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
+
+    if ddp_world_size > 1:
+        loss_tensor = torch.tensor(total_loss, device=device)
+        samples_tensor = torch.tensor(total_samples, device=device)
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(samples_tensor, op=dist.ReduceOp.SUM)
+        total_loss = loss_tensor.item()
+        total_samples = samples_tensor.item()
+
+    return total_loss / total_samples if total_samples > 0 else float("inf")
+
+
 def main(args):
     # setup dirs
     job_dir = set_exp_name(args)
@@ -188,11 +229,15 @@ def main(args):
     ddp_world_size = int(os.environ["WORLD_SIZE"])
     device = torch.device(f"cuda:{ddp_local_rank}")
     torch.cuda.set_device(device)
-    dist.init_process_group(
-        backend="nccl",
-        device_id=device,
-        timeout=datetime.timedelta(hours=2),
-    )
+    
+    # initialize distributed training only if world size > 1
+    if ddp_world_size > 1:
+        dist.init_process_group(
+            backend="nccl",
+            device_id=device,
+            timeout=datetime.timedelta(hours=2),
+        )
+    
     ddp_rank0 = ddp_rank == 0  # this process will do logging, checkpointing etc.
     seed_offset = ddp_rank  # each process gets a different seed
 
@@ -222,7 +267,8 @@ def main(args):
         if not ddp_rank0:
             continue
         os.makedirs(d, exist_ok=True)
-    dist.barrier()
+    if ddp_world_size > 1:
+        dist.barrier()
 
     # logger
     if args.use_wandb and ddp_rank0:
@@ -563,8 +609,9 @@ def main(args):
         torch._dynamo.config.capture_scalar_outputs = True
         model = torch.compile(model)
 
-    # wrap the model in DDP
-    model = DDP(model, device_ids=[ddp_local_rank])
+    # wrap the model in DDP if distributed training is enabled
+    if ddp_world_size > 1:
+        model = DDP(model, device_ids=[ddp_local_rank])
 
     # apply activation checkpointing to transformer blocks for memory efficiency
     if args.use_activation_checkpointing:
@@ -579,7 +626,7 @@ def main(args):
         logger.info("activation checkpointing enabled for transformer layers")
 
     # training loop
-    model_without_ddp = model.module
+    model_without_ddp = model.module if ddp_world_size > 1 else model
     global_step = 0
 
     if args.init_from == "resume":
@@ -614,6 +661,9 @@ def main(args):
         decay=args.decay_lr,
         decay_steps=lr_decay_steps,
     )
+
+    best_val_loss = float("inf")
+    epochs_since_improvement = 0
 
     logger.info(
         f"training starts at epoch {cur_epoch} and global step {global_step} 🚀"
@@ -724,6 +774,55 @@ def main(args):
                 device=device,
                 ctx=ctx,
             )
+
+        if args.early_stop_patience > 0:
+            val_loss = evaluate_loss(
+                model_without_ddp,
+                test_loader,
+                loss_cls,
+                device,
+                ddp_world_size,
+            )
+            if ddp_rank0:
+                logger.info(f"epoch {epoch}: val_loss {val_loss:.5f}")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                epochs_since_improvement = 0
+                if ddp_rank0:
+                    logger.info(
+                        f"validation loss improved; resetting early stopping patience"
+                    )
+                    save_ckpt(
+                        model_without_ddp,
+                        optimizer=optimizer,
+                        epoch=epoch,
+                        ema_model=ema_model,
+                        ckpt_dir=args.ckpt_dir,
+                        ddp_rank0=ddp_rank0,
+                    )
+            else:
+                epochs_since_improvement += 1
+                if ddp_rank0:
+                    logger.info(
+                        f"no improvement for {epochs_since_improvement} / {args.early_stop_patience} epochs"
+                    )
+
+            stop_training = epochs_since_improvement >= args.early_stop_patience
+            if ddp_world_size > 1:
+                stop_tensor = torch.tensor(
+                    int(stop_training),
+                    device=device,
+                )
+                dist.all_reduce(stop_tensor, op=dist.ReduceOp.SUM)
+                stop_training = stop_tensor.item() > 0
+
+            if stop_training:
+                if ddp_rank0:
+                    logger.info(
+                        f"early stopping triggered after epoch {epoch}"
+                    )
+                break
 
         if (epoch + 1) % args.ckpt_save_interval == 0:
             save_ckpt(

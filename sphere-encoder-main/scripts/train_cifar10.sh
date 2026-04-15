@@ -4,17 +4,36 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree
 
-#!/usr/bin/env bash
+
+#!/bin/bash
+#SBATCH --job-name=sphere-encoder-cifar10
+#SBATCH --output=slurm/sphere-encoder-cifar10_%j.log
+#SBATCH --error=slurm/sphere-encoder-cifar10_%j.err
+#SBATCH --time=24:00:00
+#SBATCH --partition=gpu_mig
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=8
+#SBATCH --ntasks=1
+
+module purge
+module load 2024
+module load Anaconda3/2024.06-1
+
+source activate sphere_hyper
+
+# 5000 was the original number of epochs, but it is too long for testing purposes
 
 ./run.sh train.py \
   --dataset_name cifar-10 \
+  --data_dir /scratch-local/scur0199/datasets/cifar-10 \
   --image_size 32 \
   --warmup_epochs 10 \
-  --epochs 5000 \
+  --epochs 1000 \
+  --early_stop_patience 25 \
   --compression_ratio 1.5 \
   --noise_sigma_max_angle 80 \
-  --vit_enc_model_size base \
-  --vit_dec_model_size base \
+  --vit_enc_model_size xsmall \
+  --vit_dec_model_size xsmall \
   --vit_enc_latent_mlp_mixer_depth 2 \
   --vit_dec_latent_mlp_mixer_depth 2 \
   --affine_latent_mlp_mixer True \

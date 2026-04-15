@@ -55,7 +55,11 @@ nvidia-smi
 # envs
 export CUDA_LAUNCH_BLOCKING=1
 export OMP_NUM_THREADS=1
-export NCCL_SOCKET_IFNAME=bond0
+if [ "$DIST_MODE" == "local" ]; then
+    export NCCL_SOCKET_IFNAME=lo
+else
+    export NCCL_SOCKET_IFNAME=bond0
+fi
 export NCCL_IB_DISABLE=1
 export PYTHONIOENCODING=UTF-8
 export PYTHONPATH=$PWD
@@ -96,11 +100,20 @@ PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("", 0)); print(s.
 
 # fire up
 set -x
-$SRUN_CMD torchrun \
-    --rdzv_id $RANDOM \
-    --rdzv_backend c10d \
-    --rdzv-endpoint $HEAD_NODE_IP:$PORT \
-    --nnode $WORLD_SIZE \
-    --nproc_per_node $NGPUS \
-    $INPUT_SCRIPT \
-    $INPUT_ARGVS
+if [ "$DIST_MODE" == "local" ] && [ $NGPUS -eq 1 ]; then
+    # single GPU local training - run directly without torchrun
+    export RANK=0
+    export LOCAL_RANK=0
+    export WORLD_SIZE=1
+    source ~/anaconda3/bin/activate sphere_hyper && python3 $INPUT_SCRIPT $INPUT_ARGVS
+else
+    # multi-GPU or distributed training
+    $SRUN_CMD torchrun \
+        --rdzv_id $RANDOM \
+        --rdzv_backend c10d \
+        --rdzv-endpoint $HEAD_NODE_IP:$PORT \
+        --nnode $WORLD_SIZE \
+        --nproc_per_node $NGPUS \
+        $INPUT_SCRIPT \
+        $INPUT_ARGVS
+fi

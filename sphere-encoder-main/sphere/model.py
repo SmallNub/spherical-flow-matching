@@ -29,6 +29,7 @@ from sphere.utils import (
 
 
 SIZE_DICT = {
+    "xsmall": {"width": 256, "layers": 4, "heads": 4, "in_context_start": 1},
     "small": {"width": 512, "layers": 8, "heads": 8, "in_context_start": 2},
     "base": {"width": 768, "layers": 12, "heads": 12, "in_context_start": 4},
     "large": {"width": 1024, "layers": 24, "heads": 16, "in_context_start": 8},

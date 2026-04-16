@@ -23,17 +23,19 @@ source activate sphere_hyper
 
 # 5000 was the original number of epochs, but it is too long for testing purposes
 
+
 ./run.sh train.py \
   --dataset_name cifar-10 \
-  --data_dir /scratch-local/scur0199/datasets/cifar-10 \
   --image_size 32 \
+  --batch_size_per_rank 128 \
+  --data_dir /scratch-local/scur0199/datasets/cifar-10 \
   --warmup_epochs 10 \
   --epochs 1000 \
-  --early_stop_patience 25 \
-  --compression_ratio 1.5 \
+  --early_stop_patience 15 \
+  --compression_ratio 3 \
   --noise_sigma_max_angle 80 \
-  --vit_enc_model_size xsmall \
-  --vit_dec_model_size xsmall \
+  --vit_enc_model_size small \
+  --vit_dec_model_size small \
   --vit_enc_latent_mlp_mixer_depth 2 \
   --vit_dec_latent_mlp_mixer_depth 2 \
   --affine_latent_mlp_mixer True \

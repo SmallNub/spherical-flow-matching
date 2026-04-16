@@ -80,7 +80,7 @@ cli_args = parser.parse_args()
 
 def main(cli_args):
     # setup dirs
-    exp_dir = osp.join(cli_args.dev_dir, "jobs", cli_args.job_dir)
+    exp_dir = osp.join(cli_args.dev_dir, "experiments", cli_args.job_dir)
 
     # prepare to merge config
     cli_args_dict = vars(cli_args)
@@ -152,15 +152,6 @@ def main(cli_args):
         logger.info(
             f"found reference images for reconstruction FID at: {osp.join(args.fid_ref_dir, ref_imgs_fold_name)}"
         )
-
-    fid_stats_file_path = osp.join(
-        args.dev_dir,
-        args.fid_stats_dir,
-        f"fid_stats_{args.fid_stats_used_from}_{args.dataset_name}_{args.image_size}px.npz",
-    )
-    assert osp.exists(
-        fid_stats_file_path
-    ), f"FID stats not found at: {fid_stats_file_path}"
 
     # save snapshot images to this folder
     snapshot_save_dir = None
@@ -283,8 +274,6 @@ def main(cli_args):
         num_classes=args.num_classes if args.cond_generator else 0,
         save_dir=out_dir,
         tabl_dir=tabl_dir,
-        fid_stats_file_path=fid_stats_file_path,
-        fid_stats_used_from=args.fid_stats_used_from,
         fid_ref_dir=args.fid_ref_dir,
         ckpt_epoch=ckpt_epoch,
         save_snapshot=args.save_grid_images,
@@ -349,8 +338,6 @@ def evaluate(
     cfg_position="combo",
     save_dir=None,
     tabl_dir=None,
-    fid_stats_file_path=None,
-    fid_stats_used_from="jit",
     fid_ref_dir=None,
     ckpt_epoch=None,
     save_snapshot=False,
@@ -496,8 +483,6 @@ def evaluate(
         num_eval_samples=args.num_eval_samples,
         gen_imgs_dir=gen_imgs_dir,
         tabl_dir=tabl_dir,
-        fid_stats_file_path=fid_stats_file_path,
-        fid_stats_used_from=fid_stats_used_from,
         fid_ref_dir=fid_ref_dir,
         ckpt_epoch=ckpt_epoch,
         forward_steps=forward_steps,
@@ -552,8 +537,6 @@ def calc_metrics(
     tabl_dir,
     use_ema=False,
     report_prc=False,
-    fid_stats_file_path=None,
-    fid_stats_used_from="jit",
     fid_ref_dir=None,
     forward_steps=1,
     seed_sampling=False,
@@ -585,10 +568,18 @@ def calc_metrics(
 
     # report FID/ISC
     logger.info("start calculating FID/ISC")
+    input2_for_fid = None
+    if dataset_name == "cifar-10":
+        input2_for_fid = "cifar10-train"
+    elif fid_ref_dir is not None:
+        ref_imgs_dir_for_fid = osp.join(
+            fid_ref_dir, f"ref_images_{dataset_name}_{image_size}px", "images"
+        )
+        if osp.exists(ref_imgs_dir_for_fid):
+            input2_for_fid = ref_imgs_dir_for_fid
     metrics_dict = torch_fidelity.calculate_metrics(
         input1=gen_imgs_dir,
-        input2=None,
-        fid_statistics_file=fid_stats_file_path,
+        input2=input2_for_fid,
         cuda=True,
         isc=True,
         fid=True,
@@ -606,7 +597,6 @@ def calc_metrics(
         metrics_dict = torch_fidelity.calculate_metrics(
             input1=gen_imgs_dir,
             input2=ref_imgs_dir,
-            fid_statistics_file=fid_stats_file_path,
             cuda=True,
             isc=False,
             fid=False,
@@ -625,7 +615,6 @@ def calc_metrics(
         "seed_sampling",
         "use_sampling_scheduler",
         "cache_sampling_noise",
-        "fid_stats_used_from",
         "image_size",
         "num_imgs",
         "fid",
@@ -641,7 +630,6 @@ def calc_metrics(
         seed_sampling,
         use_sampling_scheduler,
         cache_sampling_noise,
-        fid_stats_used_from,
         image_size,
         num_imgs,
         fid,

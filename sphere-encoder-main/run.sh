@@ -105,6 +105,8 @@ if [ "$DIST_MODE" == "local" ] && [ $NGPUS -eq 1 ]; then
     export RANK=0
     export LOCAL_RANK=0
     export WORLD_SIZE=1
+    export MASTER_ADDR=$HEAD_NODE_IP
+    export MASTER_PORT=$PORT
     python $INPUT_SCRIPT $INPUT_ARGVS
 else
     # multi-GPU or distributed training

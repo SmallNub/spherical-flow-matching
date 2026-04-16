@@ -9,7 +9,7 @@
 #SBATCH --job-name=sphere-encoder-cifar10
 #SBATCH --output=slurm/sphere-encoder-cifar10_%j.log
 #SBATCH --error=slurm/sphere-encoder-cifar10_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=8

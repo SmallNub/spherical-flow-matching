@@ -27,6 +27,7 @@ dependencies:
   - meshplot
   - geopandas
   - torchmetrics
+  - lightning
   - pip:
       - einops
       - timm

@@ -847,7 +847,8 @@ def main(args):
     )
 
     # end of training
-    dist.destroy_process_group()
+    if ddp_world_size > 1:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

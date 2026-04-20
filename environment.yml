@@ -12,7 +12,7 @@ dependencies:
   - torchvision=0.20.*
   - torchaudio=2.5.*
   - pytorch-cuda=12.1
-  - numpy
+  - numpy<2.0
   - scipy
   - pandas
   - matplotlib

@@ -36,7 +36,7 @@ def main(cfg: DictConfig):
     logging.getLogger("pytorch_lightning").setLevel(logging.getLevelName("INFO"))
 
     if cfg.get("seed", None) is not None:
-        pl.utilities.seed.seed_everything(cfg.seed)
+        pl.seed_everything(cfg.seed)
 
     print(cfg)
 

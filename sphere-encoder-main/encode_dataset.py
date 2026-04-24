@@ -280,5 +280,4 @@ def main(cli_args):
 
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-    main(args)
+    main(cli_args)

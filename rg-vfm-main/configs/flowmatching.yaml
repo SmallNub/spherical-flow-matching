@@ -1,0 +1,12 @@
+batch_size: 1024 # if higher, seems to have odeint error
+hidden_dim: 64
+num_epoch: 3000
+num_samples: 10000 # after 10000, seems to have odeint error
+lr: 1.0e-3
+flow: "vanilla" # choices: "vanilla", "variational"
+geometry: "sphere" # choices: "sphere", "euclidean"
+p0_distribution: "gaussian" # choices: "uniform", "gaussian"
+p0_support: "r3" # choices: "r3", "sphere"
+noise_scale: 1.0e-1
+train: true # choices: "true", "false"
+wandb: false # choices: "true", "false"

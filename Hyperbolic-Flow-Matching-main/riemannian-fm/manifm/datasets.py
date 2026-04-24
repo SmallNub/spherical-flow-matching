@@ -211,6 +211,27 @@ class Spot100(MeshDataset):
         )
 
 
+### spherical version
+class SphericalDatasetPair(Dataset):
+    def __init__(self, dataset, n_samples=20000):
+        self.dataset = dataset
+        self.n_samples = n_samples
+
+        self.manifold = dataset.manifold
+        self.dim = dataset.dim
+
+    def __len__(self):
+        return self.n_samples
+
+    def __getitem__(self, idx):
+        # x1 ~ data distribution
+        x1 = self.dataset[idx % len(self.dataset)]
+
+        # x0 ~ uniform on sphere
+        x0 = self.manifold.random_uniform(1, self.dim).squeeze(0)
+
+        return {"x0": x0, "x1": x1}
+    
 class HyperbolicDatasetPair(Dataset):
     manifold = PoincareBall()
     dim = 2
@@ -476,7 +497,6 @@ class HyperbolicUniformToGaussian(Dataset):
         ### 2. Sample x1 ~ Wrapped Normal
         x1 = self._manifold.wrapped_normal(self.dim, mean=mean, std=self.std)
         return {"x0": x0, "x1": x1}
-
 
 
 class MeshDatasetPair(Dataset):

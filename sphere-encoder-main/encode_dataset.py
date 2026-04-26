@@ -50,7 +50,7 @@ parser.add_argument("--save_dtype", type=str, default="bfloat16",
 
 # model behavior
 parser.add_argument("--use_ema", type=str2bool, default=True)
-parser.add_argument("--compile_model", type=str2bool, default=False)
+parser.add_argument("--compile_model", type=str2bool, default=True)
 
 cli_args = parser.parse_args()
 
@@ -170,7 +170,7 @@ def main(cli_args):
     )
 
     if args.compile_model:
-        model = torch.compile(model)
+        model.compile()
 
     model.eval().requires_grad_(False)
 
@@ -179,7 +179,6 @@ def main(cli_args):
     # -------------------------------------------------
     transform = transforms.Compose([
         transforms.Resize(args.image_size),
-        transforms.CenterCrop(args.image_size),
         transforms.ToTensor(),
         transforms.Normalize([0.5]*3, [0.5]*3),
     ])

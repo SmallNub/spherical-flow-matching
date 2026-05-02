@@ -96,7 +96,6 @@ def get_split_indices(split_ids, target_id):
 # DECODE LOOP
 # -------------------------------------------------
 def decode_from_latents(model, z, y=None):
-    z = model.spherify(z, sampling=False)
     x = model.decoder(z, y)
     x = torch.clamp(x * 0.5 + 0.5, 0, 1)
     return x

@@ -244,6 +244,7 @@ def main(cli_args):
 
             with torch.autocast(device_type="cuda", dtype=ptdtype):
                 z = model.encoder(x, y)
+                z = model.spherify(z, sampling=False)
 
             z = z.cpu()
 

@@ -129,9 +129,6 @@ def decode_and_save(model, z, y, save_dir, args, ptdtype, device):
         if args.normalize_latents:
             z_batch = F.normalize(z_batch, dim=-1)
 
-        # match model dtype
-        z_batch = z_batch.to(ptdtype)
-
         with torch.autocast(device_type="cuda", dtype=ptdtype):
             x_rec = decode_from_latents(model, z_batch, y_batch)
 
@@ -239,7 +236,7 @@ def main(cli_args):
         affine_latent_mlp_mixer=args.affine_latent_mlp_mixer,
     )
 
-    model.to(device=device, dtype=ptdtype, memory_format=torch.channels_last)
+    model.to(device=device, memory_format=torch.channels_last)
 
     ema_model = SimpleEMA(model)
 

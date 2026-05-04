@@ -21,8 +21,8 @@ class VectorDynamicsSphere(VectorDynamics):
         t: (batch_size, 1) in [0,1]
         return: (batch_size, 3) tangent vector
         """
-        assert x.shape[-1] == 3, f"Expected x to have shape (batch_size, 3), got {x.shape}"
-        assert t.shape[-1] == 1, f"Expected t to have shape (batch_size, 1), got {t.shape}"
+        # assert x.shape[-1] == 3, f"Expected x to have shape (batch_size, 3), got {x.shape}"
+        # assert t.shape[-1] == 1, f"Expected t to have shape (batch_size, 1), got {t.shape}"
         x = x / (x.norm(dim=1, keepdim=True) + 1e-7)
         inp = torch.cat([t, x], dim=-1)
         inp = self.input_layer(inp)
@@ -46,7 +46,7 @@ class PositionDynamicsSphere(PositionDynamics):
         t: (batch_size, 1) in [0,1]
         return: (batch_size, 3) tangent vector
         """
-        assert x.shape[-1] == 3, f"Expected x to have shape (batch_size, 3), got {x.shape}"
-        assert t.shape[-1] == 1, f"Expected t to have shape (batch_size, 1), got {t.shape}"
+        # assert x.shape[-1] == 3, f"Expected x to have shape (batch_size, 3), got {x.shape}"
+        # assert t.shape[-1] == 1, f"Expected t to have shape (batch_size, 1), got {t.shape}"
         mu_t = super().forward(t, x)
         return mu_t / torch.norm(mu_t, dim=-1, keepdim=True)

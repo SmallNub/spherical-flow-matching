@@ -56,11 +56,11 @@ def parse_args():
     return parser.parse_args()
 
 
-def initialize_p0(p0_distribution, support, num_samples):
+def initialize_p0(p0_distribution, support, num_samples, data_dim):
     if support == "extrinsic":
-        dim = 3
+        dim = data_dim
     elif support == "intrinsic":
-        dim = 2
+        dim = data_dim - 1
 
     if p0_distribution == "uniform": # uniform distribution
         x0 = 2*torch.rand(num_samples, dim) - 1
@@ -84,8 +84,9 @@ def train_flow(model, loss_fn, trainloader, num_epoch, lr, p0_distribution, supp
     for epoch in pbar:
         total_loss = 0.0
         for x1 in trainloader:
+            x1 = x1.view(x1.shape[0], -1).to(device)
             t = torch.rand(x1.shape[0], 1, device=device)
-            x0 = initialize_p0(p0_distribution, support, x1.shape[0])
+            x0 = initialize_p0(p0_distribution, support, x1.shape[0], x1.shape[-1]).to(device)
             loss = loss_fn(model, x0, x1, t)
 
             optimizer.zero_grad()
@@ -106,16 +107,16 @@ def train_flow(model, loss_fn, trainloader, num_epoch, lr, p0_distribution, supp
     return best_model
 
 
-def initialize_model(flow, geometry, hidden_dim, support, noise_scale):
+def initialize_model(flow, geometry, hidden_dim, support, noise_scale, data_dim):
     if geometry == "euclidean":
         if flow == "vanilla":
-            model = VectorDynamics(input_dim=3, time_dim=1, hidden_dim=hidden_dim)
+            model = VectorDynamics(input_dim=data_dim, time_dim=1, hidden_dim=hidden_dim)
             velocity = VelocityWrapper(model)
             flow_matching = VanillaLossSphere(noise_scale=noise_scale)
             loss = flow_matching.loss_euclidean
 
         elif flow == "variational":
-            model = PositionDynamics(input_dim=3, time_dim=1, hidden_dim=hidden_dim)
+            model = PositionDynamics(input_dim=data_dim, time_dim=1, hidden_dim=hidden_dim)
             velocity = VelocityInference(model)
             flow_matching = VariationalLossSphere(noise_scale=noise_scale)
             loss = flow_matching.loss_euclidean
@@ -124,26 +125,26 @@ def initialize_model(flow, geometry, hidden_dim, support, noise_scale):
         if flow == "vanilla":
             if support == "extrinsic":
                 warnings.warn(f"Extrinsic support for Riemannian Flow Matching might lead to errors")
-                model = VectorDynamicsSphere(input_dim=3, time_dim=1, hidden_dim=hidden_dim)
+                model = VectorDynamicsSphere(data_dim, time_dim=1, hidden_dim=hidden_dim)
                 velocity = VelocityWrapper(model)
                 flow_matching = VanillaLossSphere(noise_scale=noise_scale)
                 loss = flow_matching.loss_extrinsic
 
             elif support == "intrinsic":
-                model = VectorDynamicsSphere(input_dim=3, time_dim=1, hidden_dim=hidden_dim)
+                model = VectorDynamicsSphere(data_dim, time_dim=1, hidden_dim=hidden_dim)
                 velocity = VelocityWrapper(model)
                 flow_matching = VanillaLossSphere(noise_scale=noise_scale)
                 loss = flow_matching.loss_intrinsic
 
         elif flow == "variational":
             if support == "extrinsic":
-                model = PositionDynamicsSphere(input_dim=3, time_dim=1, hidden_dim=hidden_dim)
+                model = PositionDynamicsSphere(input_dim=data_dim, time_dim=1, hidden_dim=hidden_dim)
                 velocity = VelocityInference(model)
                 flow_matching = VariationalLossSphere(noise_scale=noise_scale)
                 loss = flow_matching.loss_extrinsic
 
             elif support == "intrinsic":
-                model = PositionDynamicsSphere(input_dim=3, time_dim=1, hidden_dim=hidden_dim)
+                model = PositionDynamicsSphere(input_dim=data_dim, time_dim=1, hidden_dim=hidden_dim)
                 velocity = VelocityInferenceSphere(model)
                 flow_matching = VariationalLossSphere(noise_scale=noise_scale)
                 loss = flow_matching.loss_intrinsic
@@ -215,8 +216,12 @@ def main():
         dataset = EmbeddingDataset(data_path)
     trainloader = data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
+    data_dim = dataset[0].numel()
+
     # initialize model
-    model, velocity, loss_fn = initialize_model(flow, geometry, hidden_dim, support, noise_scale)
+    model, velocity, loss_fn = initialize_model(flow, geometry, hidden_dim, support, noise_scale, data_dim)
+
+    model = model.to(device)
 
     # Train the flow model
     if train == True:
@@ -232,7 +237,7 @@ def main():
         print(f"Loaded model from {folder}")
 
     # compute probability paths from t=0 to t=1
-    x0 = initialize_p0(p0_distribution, support, 10000) # 2500 points to plot the density
+    x0 = initialize_p0(p0_distribution, support, 10000, data_dim) # 2500 points to plot the density
     t_span = torch.linspace(0.0, 0.99, steps=101)  # Uniform time grid
     times_to_show = [0.00, 0.25, 0.5, 0.75, 0.99] # t=0 (uniform) to t=1 (checkerboard)
 

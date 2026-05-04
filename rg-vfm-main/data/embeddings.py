@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 class EmbeddingDataset(data.Dataset):
     def __init__(self, path):
         self.data = torch.load(path)
+        self.data = self.data["encodings"]
 
     def __len__(self):
         return len(self.data)

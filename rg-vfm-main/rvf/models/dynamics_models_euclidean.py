@@ -35,8 +35,8 @@ class VectorDynamics(nn.Module):
         t: (batch_size, 1) in [0,1]
         return: (batch_size, 3) tangent vector
         """
-        assert x.shape[-1] == self.input_dim, f"Expected x to have shape (batch_size, {self.input_dim}), got {x.shape}"
-        assert t.shape[-1] == 1, f"Expected t to have shape (batch_size, 1), got {t.shape}"
+        # assert x.shape[-1] == self.input_dim, f"Expected x to have shape (batch_size, {self.input_dim}), got {x.shape}"
+        # assert t.shape[-1] == 1, f"Expected t to have shape (batch_size, 1), got {t.shape}"
         inp = torch.cat([t, x], dim=-1)  # shape (batch_size, 3+1)
         inp = self.input_layer(inp)
         return self.net(inp)

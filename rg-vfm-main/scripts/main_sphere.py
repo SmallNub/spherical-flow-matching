@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import warnings
 from data.toys import CheckerboardSphere
+from data.embeddings import EmbeddingDataset
 
 from rvf.solver.wrappers_euclidean import VelocityInference, VelocityWrapper
 from rvf.solver.wrappers_sphere import VelocityInferenceSphere
@@ -50,6 +51,8 @@ def parse_args():
     # training
     parser.add_argument('--train', action='store_true', default=True, help="Enable training")
     parser.add_argument("--wandb", action='store_true', default=False, help="Log to wandb")
+    # data (custom)
+    parser.add_argument("--data_path", type=str, default="")
     return parser.parse_args()
 
 
@@ -180,6 +183,8 @@ def main():
     noise_scale = opts.noise_scale
     train = opts.train
     wand_active = opts.wandb
+    ## custom
+    data_path = opts.data_path
 
     # create folder and save config
     if geometry == "euclidean": support = "extrinsic"
@@ -204,7 +209,10 @@ def main():
         wandb.init(mode="disabled")
 
     # prepare data
-    dataset = CheckerboardSphere(num_samples)
+    if data_path == "":
+        dataset = CheckerboardSphere(num_samples)
+    else:
+        dataset = EmbeddingDataset(data_path)
     trainloader = data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     # initialize model

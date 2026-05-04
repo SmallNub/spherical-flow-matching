@@ -12,12 +12,17 @@ top500_datadir: /checkpoint/${oc.env:USER}/data/top500
 mesh_datadir: /checkpoint/${oc.env:USER}/data/mesh
 data_seed: null  # seed for creating the data splits. By default, uses global seed.
 #euclidean_datadir: /home/fvaleau/HAE/proj/umap_flowers/euc_embed_tv
-euclidean_datadir: /home/fvaleau/HAE/proj/animals_emb_1/euc_embed_flat
+euclidean_datadir: /home/nub/UvA/Master/DL2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data/all.pt
 images_datadir: /home/fvaleau/HAE/proj/animals_emb_5/embed
 #images_datadir: /home/fvaleau/HAE/proj/flowers_emb_10/embed
 images_labels: /home/fvaleau/HAE/proj/umap_flowers/labels
 images_datadir_A: /home/fvaleau/HAE/proj/selected_embeddings/100
 images_datadir_B: /home/fvaleau/HAE/proj/selected_embeddings/102
+
+manifold:
+  name: sphere
+  dim: 3
+
 
 # Only used for sampling from wrapped distributions.
 wrapped:
@@ -47,7 +52,7 @@ model:
   metric_normalize: False
 
 optim:
-  num_iterations: 1000000
+  num_iterations: 1000
   batch_size: 1024
   val_batch_size: 20000
 

@@ -19,6 +19,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks import LearningRateMonitor
+from pytorch_lightning.plugins.environments import SLURMEnvironment
+from pytorch_lightning.loggers import WandbLogger, CSVLogger
 
 from manifm.datasets import get_loaders
 from manifm.model_pl import ManifoldFMLitModule
@@ -80,15 +82,15 @@ def main(cfg: DictConfig):
         LearningRateMonitor(),
     ]
 
-    slurm_plugin = pl.plugins.environments.SLURMEnvironment(auto_requeue=False)
+    slurm_plugin = SLURMEnvironment(auto_requeue=False)
 
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     cfg_dict["cwd"] = os.getcwd()
-    loggers = [pl.loggers.CSVLogger(save_dir=".")]
+    loggers = [CSVLogger(save_dir=".")]
     if cfg.use_wandb:
         now = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         loggers.append(
-            pl.loggers.WandbLogger(
+            WandbLogger(
                 save_dir=".",
                 name=f"{cfg.data}_{now}",
                 project="ManiFM",

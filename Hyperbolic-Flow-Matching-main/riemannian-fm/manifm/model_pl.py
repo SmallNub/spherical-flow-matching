@@ -608,7 +608,6 @@ class ManifoldFMLitModule(pl.LightningModule):
                 path = geodesic(self.manifold, x0, x1)
                 x_t, u_t = jvp(path, (t,), (torch.ones_like(t).to(t),))
                 return x_t, u_t
-            print(x0.shape, x1.shape, t.shape)
             x_t, u_t = vmap(cond_u)(x0, x1, t)
             x_t = x_t.reshape(N, self.dim)
             u_t = u_t.reshape(N, self.dim)
@@ -650,7 +649,7 @@ class ManifoldFMLitModule(pl.LightningModule):
         # remember to always return loss from `training_step()` or else backpropagation will fail!
         return {"loss": loss}
 
-    def training_epoch_end(self, outputs: List[Any]):
+    def on_train_epoch_end(self):
         # `outputs` is a list of dicts returned from `training_step()`
         self.train_metric.reset()
 
@@ -672,7 +671,7 @@ class ManifoldFMLitModule(pl.LightningModule):
 
         return {"loss": loss}
 
-    def validation_epoch_end(self, outputs: List[Any]):
+    def on_validation_epoch_end(self):
         val_loss = self.val_metric.compute()  # get val accuracy from current epoch
         self.val_metric_best.update(val_loss)
         self.log(
@@ -695,7 +694,7 @@ class ManifoldFMLitModule(pl.LightningModule):
         self.test_metric.update(-logprob)
         return {"loss": loss}
 
-    def test_epoch_end(self, outputs: List[Any]):
+    def on_test_epoch_end(self):
         self.test_metric.reset()
 
     def configure_optimizers(self):

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from manifm.model_pl import ManifoldFMLitModule
 from omegaconf import OmegaConf
 
@@ -6,56 +7,102 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # 1. LOAD MODEL
 cfg = OmegaConf.load("configs/train.yaml")
-ckpt_path = "outputs/runs/euclidean/fm/2026.05.04/145358/checkpoints/epoch-021_step-0_loss-0.0000.ckpt"
+ckpt_path = "outputs/runs/sphere_encodings/fm/2026.05.05/150140/checkpoints/last.ckpt"
 
-model = ManifoldFMLitModule.load_from_checkpoint(
-    ckpt_path,
-    cfg=cfg
-).to(DEVICE)
+model = ManifoldFMLitModule.load_from_checkpoint(ckpt_path, cfg=cfg).to(DEVICE)
 model.eval()
 
-# Use the manifold and dim defined in the model/config
 manifold = model.manifold
 dim = model.dim
 
-# 2. VECTOR FIELD ACCESS
-# Using model.vecfield(t, x) directly is safer because it handles 
-# the EMA, Unbatch, and ProjectToTangent logic correctly.
+
+def normalize(z):
+    N, T, D = z.shape  # e.g. 256, 4
+
+    z = z.reshape(N, T * D)   # [N, 1024]
+
+    z = z / z.norm(dim=-1, keepdim=True)
+    return z
+
+
+def unnormalize(z_flat, T=256, D=4):
+    N = z_flat.shape[0]
+
+    z = z_flat.reshape(N, T, D)
+
+    # OPTIONAL: re-normalize per token (recommended)
+    z = z / z.norm(dim=-1, keepdim=True)
+
+    return z
+
+
+# 2. VECTOR FIELD WRAPPER
 def get_v(x, t_val):
-    # model.vecfield expects (t, x) based on the training loop logic
     t = torch.full((x.shape[0], 1), t_val, device=DEVICE)
     return model.vecfield(t, x)
 
-# 3. FLOW SAMPLING
+# 3. CORE INTEGRATION LOGIC
 @torch.no_grad()
-def sample_flow(n_samples=10000, steps=100):
-    # Use the manifold's own base sampling to ensure correct shape/distribution
-    z = manifold.random_base(n_samples, dim).to(DEVICE)
-    
-    # Standard Euler integration on the manifold
+def integrate_flow(z_start, steps=100):
+    """Generic Euler integrator for the manifold flow."""
+    z = z_start.clone().to(DEVICE)
     dt = 1.0 / steps
-    
+
     for i in range(steps):
         current_t = i / steps
         v = get_v(z, current_t)
-        
-        # Euler Step
+
+        # Euler Step + Manifold Projection
         z = z + dt * v
-        
-        # Projection step: Crucial for staying on the manifold (e.g., S2)
         z = manifold.projx(z)
-        
+
     return z
 
-# 4. GENERATE
-Z_gen = sample_flow(n_samples=50000, steps=100)
+# 4. IMPROVE EXISTING ENCODINGS
+@torch.no_grad()
+def improve_encodings(path_to_existing, steps=50):
+    """Loads existing .pt file and pushes encodings through the flow."""
+    print(f"Loading existing encodings from {path_to_existing}")
+    data = torch.load(path_to_existing, map_location=DEVICE)
+    z_existing = data["encodings"].float()
+    labels = data.get("labels")
+    split_ids = data.get("split_ids")
+    split_names = data.get("split_names")
 
-# 5. SAVE
+    z_existing = normalize(z_existing)
+
+    # If labels are None but the decoder needs them, initialize zeros
+    if labels is None:
+        labels = torch.zeros(z_existing.shape[0], dtype=torch.long)
+
+    print(f"Refining {z_existing.shape[0]} samples...")
+    z_improved = integrate_flow(z_existing, steps=steps)
+
+    return z_improved, labels, split_ids, split_names
+
+
+# 5. EXECUTION TOGGLE
+MODE = "improve"  # Switch between "generate" or "improve"
+EXISTING_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
+
+if MODE == "generate":
+    n_samples = 50000
+    z_init = manifold.random_base(n_samples, dim).to(DEVICE)
+    labels = torch.zeros(n_samples, dtype=torch.long)
+    z_final = integrate_flow(z_init, steps=100)
+    split_ids = torch.zeros(n_samples, dtype=torch.long)
+    split_names = ["generated"]
+else:
+    z_final, labels, split_ids, split_names = improve_encodings(EXISTING_PATH, steps=50)
+
+z_final = unnormalize(z_final.cpu())
+
+# 6. SAVE
 torch.save({
-    "encodings": Z_gen.cpu(),
-    "labels": None,
-    "split_ids": None,
-    "split_names": ["generated"],
-}, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/generated_encodings.pt")
+    "encodings": z_final,
+    "labels": labels if labels is not None else None,
+    "split_ids": split_ids,
+    "split_names": split_names,
+}, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.pt")
 
-print("Saved:", Z_gen.shape)
+print(f"Done. Saved shape: {z_final.shape}")

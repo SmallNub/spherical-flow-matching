@@ -3,7 +3,7 @@
 # Config-driven (reads cfg.json automatically from checkpoint dir)
 
 python eval_encodings.py \
-  --encoding_path workspace/experiments/sphere-small-small-cifar-10-32px/encoding/generated_encodings.pt \
+  --encoding_path workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.pt \
   --checkpoint workspace/experiments/sphere-small-small-cifar-10-32px/ckpt \
   --output_dir workspace/experiments/sphere-small-small-cifar-10-32px/decoded_eval \
   --dataset_name cifar-10 \

@@ -558,6 +558,35 @@ class Maze4v2(MeshDatasetPair):
         )
 
 
+class SphereEncodingDataset(Dataset):
+    """
+    Dataset for Sphere Encodings (e.g., from Meta's Sphere Encoder).
+    Assumes encodings are points on the unit sphere S^{n-1} in R^n.
+    """
+    def __init__(self, data_path):
+        # Load your data. Expecting shape [N, D]
+        # If your encodings are torch tensors saved via torch.save:
+        self.data = torch.load(data_path).float()
+
+        # Ensure the data is normalized (just in case)
+        self.data = self.data / self.data.norm(dim=-1, keepdim=True)
+
+        self.manifold = Sphere()
+        self.dim = self.data.shape[1]  # e.g., 3 for a 2D sphere surface in 3D space
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        # Flow matching usually needs a pair (x0, x1)
+        # x1: Your data point (target)
+        # x0: Noise sampled from the uniform distribution on the sphere (source)
+        x1 = self.data[idx]
+        x0 = self.manifold.random_uniform(1, self.dim).squeeze(0)
+
+        return {"x0": x0, "x1": x1}
+
+
 class Wrapped(Dataset):
     def __init__(
         self,
@@ -692,6 +721,9 @@ def _get_dataset(cfg):
         dataset = HyperbolicUniformToGaussian()
     elif cfg.data == "euclidean":
         dataset = EuclideanImages(cfg.get("euclidean_datadir"))
+    elif cfg.data == "sphere_encodings":
+        # Pass the path to your .pt file from your config
+        dataset = SphereEncodingDataset(cfg.get("sphere_data_path"))
     else:
         raise ValueError("Unknown dataset option '{name}'")
     return dataset, expand_factor
@@ -717,13 +749,13 @@ def get_loaders(cfg):
     train_set = ExpandDataset(train_set, expand_factor=expand_factor)
 
     train_loader = DataLoader(
-        train_set, cfg.optim.batch_size, shuffle=True, pin_memory=True, drop_last=True
+        train_set, cfg.optim.batch_size, shuffle=True, pin_memory=True, drop_last=True, num_workers=15, prefetch_factor=2
     )
     val_loader = DataLoader(
-        val_set, cfg.optim.val_batch_size, shuffle=False, pin_memory=True
+        val_set, cfg.optim.val_batch_size, shuffle=False, pin_memory=True, num_workers=15, prefetch_factor=2
     )
     test_loader = DataLoader(
-        test_set, cfg.optim.val_batch_size, shuffle=False, pin_memory=True
+        test_set, cfg.optim.val_batch_size, shuffle=False, pin_memory=True, num_workers=15, prefetch_factor=2
     )
 
     return train_loader, val_loader, test_loader

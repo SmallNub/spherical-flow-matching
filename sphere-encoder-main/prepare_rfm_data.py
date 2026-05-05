@@ -29,13 +29,18 @@ else:
     val = Z[int(0.8 * N): int(0.9 * N)]
     test = Z[int(0.9 * N):]
 
+
 # -------------------------------------------------
 # CRITICAL: enforce sphere constraint again
 # -------------------------------------------------
 def normalize(z):
-    z = z.mean(dim=1)   # OR reshape for flattening
+    N, T, D = z.shape  # e.g. 256, 4
+
+    z = z.reshape(N, T * D)   # [N, 1024]
+
     z = z / z.norm(dim=-1, keepdim=True)
     return z
+
 
 train = normalize(train)
 val = normalize(val)

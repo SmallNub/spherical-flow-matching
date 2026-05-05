@@ -26,8 +26,8 @@ from manifm.datasets import get_loaders
 from manifm.model_pl import ManifoldFMLitModule
 
 
-
-torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 log = logging.getLogger(__name__)
 
 

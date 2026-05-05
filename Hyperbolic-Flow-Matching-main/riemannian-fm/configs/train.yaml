@@ -5,23 +5,21 @@ defaults:
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
-data: euclidean  # {volcano,earthquake,fire,flood}
+data: sphere_encodings  # {volcano,earthquake,fire,flood}
+sphere_data_path: /home/nub/UvA/Master/DL2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data/all.pt
+
 earth_datadir: /checkpoint/${oc.env:USER}/data/earth_data
 rna_datadir: /checkpoint/${oc.env:USER}/data/rna
 top500_datadir: /checkpoint/${oc.env:USER}/data/top500
 mesh_datadir: /checkpoint/${oc.env:USER}/data/mesh
 data_seed: null  # seed for creating the data splits. By default, uses global seed.
 #euclidean_datadir: /home/fvaleau/HAE/proj/umap_flowers/euc_embed_tv
-euclidean_datadir: /home/nub/UvA/Master/DL2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data/all.pt
+euclidean_datadir: /home/fvaleau/HAE/proj/animals_emb_1/euc_embed_flat
 images_datadir: /home/fvaleau/HAE/proj/animals_emb_5/embed
 #images_datadir: /home/fvaleau/HAE/proj/flowers_emb_10/embed
 images_labels: /home/fvaleau/HAE/proj/umap_flowers/labels
 images_datadir_A: /home/fvaleau/HAE/proj/selected_embeddings/100
 images_datadir_B: /home/fvaleau/HAE/proj/selected_embeddings/102
-
-manifold:
-  name: sphere
-  dim: 3
 
 
 # Only used for sampling from wrapped distributions.
@@ -52,9 +50,9 @@ model:
   metric_normalize: False
 
 optim:
-  num_iterations: 1000
+  num_iterations: 10000
   batch_size: 1024
-  val_batch_size: 20000
+  val_batch_size: 128
 
   scheduler: cosine
   grad_clip: 0.0
@@ -62,6 +60,8 @@ optim:
   wd: 0.0
   eps: 1e-8
   ema_decay: 0.999
+
+precision: bf16-mixed
 
 div_mode: exact
 normalize_loglik: False
@@ -73,7 +73,7 @@ resume: null
 
 seed: 0
 
-val_every: 1000
+val_every: 1000000
 ckpt_every: null
 visualize: False
 

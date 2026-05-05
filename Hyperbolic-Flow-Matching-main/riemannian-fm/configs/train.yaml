@@ -67,7 +67,7 @@ div_mode: exact
 normalize_loglik: False
 early_stopping_patience: 200  # this is affected by val_every
 
-use_wandb: True
+use_wandb: False
 
 resume: null
 

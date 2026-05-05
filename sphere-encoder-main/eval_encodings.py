@@ -272,6 +272,8 @@ def main(cli_args):
     # RUN PER SPLIT
     # -------------------------------------------------
     for split_id, split_name in splits_to_eval:
+        if split_name != "test":
+            continue  # ONLY EVAL TEST SPLIT FOR NOW
 
         logger.info(f"\n==== Evaluating split: {split_name} ====")
 

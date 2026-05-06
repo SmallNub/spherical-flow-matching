@@ -21,7 +21,7 @@ module load Anaconda3/2024.06-1
 
 source activate sphere_hyper
 
-# python -m scripts.main_sphere --flow variational --geometry riemannian --support intrinsic --p0_distribution uniform --data_path ../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt --num_epoch 3 --batch_size 32
+python -m scripts.main_sphere --flow variational --geometry riemannian --support intrinsic --p0_distribution gaussian --data_path ../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt --num_epoch 3 --batch_size 8
 
 python -m scripts.main_sphere \
   --flow variational \

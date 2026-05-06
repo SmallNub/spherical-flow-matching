@@ -215,14 +215,16 @@ def main():
     else:
         dataset = EmbeddingDataset(data_path)
 
-    train_idx = dataset.splits["train"]
-    val_idx = dataset.splits["val"]
+    val_idx = dataset.splits.bool()
+    train_idx = ~ val_idx
     
     train_dataset = torch.utils.data.Subset(dataset, train_idx)
     val_dataset = torch.utils.data.Subset(dataset, val_idx)
 
     trainloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     valloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+
+
 
     data_dim = dataset[0].numel()
 

@@ -49,7 +49,7 @@ def parse_args():
     parser.add_argument("--support", type=str, default="intrinsic", choices=["extrinsic", "intrinsic"])
     parser.add_argument("--p0_distribution", type=str, default="gaussian", choices=["uniform", "gaussian"])
     # training
-    parser.add_argument('--train', action='store_true', default=True, help="Enable training")
+    parser.add_argument('--no_train', action='store_true', default=False, help="Disable training")
     parser.add_argument("--wandb", action='store_true', default=False, help="Log to wandb")
     # data (custom)
     parser.add_argument("--data_path", type=str, default="")
@@ -182,7 +182,7 @@ def main():
     p0_distribution = opts.p0_distribution
     support = opts.support   
     noise_scale = opts.noise_scale
-    train = opts.train
+    train = not opts.no_train
     wand_active = opts.wandb
     ## custom
     data_path = opts.data_path
@@ -214,7 +214,15 @@ def main():
         dataset = CheckerboardSphere(num_samples)
     else:
         dataset = EmbeddingDataset(data_path)
-    trainloader = data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    train_idx = dataset.splits["train"]
+    val_idx = dataset.splits["val"]
+    
+    train_dataset = torch.utils.data.Subset(dataset, train_idx)
+    val_dataset = torch.utils.data.Subset(dataset, val_idx)
+
+    trainloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    valloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
 
     data_dim = dataset[0].numel()
 
@@ -236,8 +244,15 @@ def main():
         model = load_model(model, folder)
         print(f"Loaded model from {folder}")
 
+
+    model = model.to(device)
+    model.eval()
+
+
+
+
     # compute probability paths from t=0 to t=1
-    x0 = initialize_p0(p0_distribution, support, 10000, data_dim) # 2500 points to plot the density
+    x0 = initialize_p0(p0_distribution, support, 10, data_dim) # 2500 points to plot the density
     t_span = torch.linspace(0.0, 0.99, steps=101)  # Uniform time grid
     times_to_show = [0.00, 0.25, 0.5, 0.75, 0.99] # t=0 (uniform) to t=1 (checkerboard)
 
@@ -258,179 +273,182 @@ def main():
     x1_gen = sols[-1]
     generation_time = time.time() - generation_start_time
 
-    x1 = trainloader.dataset[:10000]
-    x1_flat = SphereManifold().unwrap(x1)
+    print(x0.norm(dim=-1))
+    print(x1_gen.norm(dim=-1))
 
-    print("Plotting probability paths...")
-    # plot the density unwrapped in 2d from the sphere to the plane
-    x1_gen_flat = torch2npy(SphereManifold().unwrap(x1_gen))
-    fig, ax = plt.subplots()
-    ax = add_x1_background(ax, x1_flat, alpha=0.15)
-    ax.scatter(x1_gen_flat[:, 0], x1_gen_flat[:, 1], s=1, color="red")
-    ax.set_xlim(-1.2, 1.2)
-    ax.set_ylim(-1.2, 1.2)
-    plt.tight_layout()
-    fig.savefig(os.path.join(folder, "density_unwrapped.png"), dpi=300)
-    wandb.log({"density_unwrapped": wandb.Image(plt)})
-    plt.close(fig)
+    # x1 = trainloader.dataset[:10000]
+    # x1_flat = SphereManifold().unwrap(x1)
 
-    # Plot histogram of norms to check how well points lie on the sphere
-    print("Analyzing sphere constraint violation...")
-    norms = torch.norm(x1_gen, dim=1).detach().cpu().numpy()
-    fig, ax = plt.subplots()
-    ax.hist(norms, bins=100, range=(0.9, 1.1), alpha=0.7, edgecolor='black')
-    ax.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='Perfect sphere (norm=1)')
-    ax.set_xlabel('Norm ||x||')
-    ax.set_ylabel('Frequency')
-    ax.set_title('Distribution of Point Norms (Should be ~1.0 for Sphere)')
-    ax.legend()
-    plt.tight_layout()
-    fig.savefig(os.path.join(folder, 'norms_histogram.svg'), dpi=300)
-    fig.savefig(os.path.join(folder, 'norms_histogram.png'), dpi=300)
-    wandb.log({"norms_histogram": wandb.Image(plt)})
-    plt.close(fig)
-    
-    # Compute statistics
-    average_norm = np.mean(norms)
-    std_norm = np.std(norms)
-    deviation_from_unit = np.abs(norms - 1.0)
-    max_deviation = np.max(deviation_from_unit)
-    percentage_within_tol = np.mean(deviation_from_unit < 1e-2) * 100
-    
-    # Save statistics to file
-    with open(os.path.join(folder, 'sphere_constraint_stats.txt'), 'w') as f:
-        f.write(f"Sphere Constraint Analysis\n")
-        f.write(f"========================\n")
-        f.write(f"Average Norm: {average_norm:.6f}\n")
-        f.write(f"Std Norm: {std_norm:.6f}\n")
-        f.write(f"Max Deviation from 1.0: {max_deviation:.6f}\n")
-        f.write(f"Points within 1e-2 tolerance: {percentage_within_tol:.2f}%\n")
-    
-    print(f"Sphere constraint stats: avg_norm={average_norm:.4f}, std={std_norm:.4f}, within_tol={percentage_within_tol:.1f}%")
+    # print("Plotting probability paths...")
+    # # plot the density unwrapped in 2d from the sphere to the plane
+    # x1_gen_flat = torch2npy(SphereManifold().unwrap(x1_gen))
+    # fig, ax = plt.subplots()
+    # ax = add_x1_background(ax, x1_flat, alpha=0.15)
+    # ax.scatter(x1_gen_flat[:, 0], x1_gen_flat[:, 1], s=1, color="red")
+    # ax.set_xlim(-1.2, 1.2)
+    # ax.set_ylim(-1.2, 1.2)
+    # plt.tight_layout()
+    # fig.savefig(os.path.join(folder, "density_unwrapped.png"), dpi=300)
+    # wandb.log({"density_unwrapped": wandb.Image(plt)})
+    # plt.close(fig)
 
-    # Compute C2ST and Coverage metrics only
-    print("\nEvaluating C2ST and coverage metrics...")
+    # # Plot histogram of norms to check how well points lie on the sphere
+    # print("Analyzing sphere constraint violation...")
+    # norms = torch.norm(x1_gen, dim=1).detach().cpu().numpy()
+    # fig, ax = plt.subplots()
+    # ax.hist(norms, bins=100, range=(0.9, 1.1), alpha=0.7, edgecolor='black')
+    # ax.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='Perfect sphere (norm=1)')
+    # ax.set_xlabel('Norm ||x||')
+    # ax.set_ylabel('Frequency')
+    # ax.set_title('Distribution of Point Norms (Should be ~1.0 for Sphere)')
+    # ax.legend()
+    # plt.tight_layout()
+    # fig.savefig(os.path.join(folder, 'norms_histogram.svg'), dpi=300)
+    # fig.savefig(os.path.join(folder, 'norms_histogram.png'), dpi=300)
+    # wandb.log({"norms_histogram": wandb.Image(plt)})
+    # plt.close(fig)
     
-    # Ensure tensors are on CPU
-    x1_real_cpu = x1.cpu() if x1.is_cuda else x1
-    x1_gen_cpu = x1_gen.detach().cpu() if x1_gen.is_cuda else x1_gen.detach()
+    # # Compute statistics
+    # average_norm = np.mean(norms)
+    # std_norm = np.std(norms)
+    # deviation_from_unit = np.abs(norms - 1.0)
+    # max_deviation = np.max(deviation_from_unit)
+    # percentage_within_tol = np.mean(deviation_from_unit < 1e-2) * 100
     
-    # 1. Compute coverage metrics
-    print("Computing coverage metrics...")
-    coverage_results = compute_checkerboard_coverage(x1_gen_cpu, SphereManifold())
+    # # Save statistics to file
+    # with open(os.path.join(folder, 'sphere_constraint_stats.txt'), 'w') as f:
+    #     f.write(f"Sphere Constraint Analysis\n")
+    #     f.write(f"========================\n")
+    #     f.write(f"Average Norm: {average_norm:.6f}\n")
+    #     f.write(f"Std Norm: {std_norm:.6f}\n")
+    #     f.write(f"Max Deviation from 1.0: {max_deviation:.6f}\n")
+    #     f.write(f"Points within 1e-2 tolerance: {percentage_within_tol:.2f}%\n")
     
-    # 2. Compute C2ST metrics
-    print("Computing C2ST metrics...")
-    c2st_results = compute_c2st_score(
-        x1_real_cpu, 
-        x1_gen_cpu, 
-        use_2d_unwrapped=True,
-        sphere_manifold=SphereManifold(),  # Pass sphere manifold
-        num_runs=3,
-        num_epochs=50
-    )
+    # print(f"Sphere constraint stats: avg_norm={average_norm:.4f}, std={std_norm:.4f}, within_tol={percentage_within_tol:.1f}%")
+
+    # # Compute C2ST and Coverage metrics only
+    # print("\nEvaluating C2ST and coverage metrics...")
     
-    # Save results to file
-    with open(os.path.join(folder, 'coverage_c2st_metrics.txt'), 'w') as f:
-        f.write("COVERAGE AND C2ST METRICS (SPHERE)\n")
-        f.write("=" * 40 + "\n\n")
+    # # Ensure tensors are on CPU
+    # x1_real_cpu = x1.cpu() if x1.is_cuda else x1
+    # x1_gen_cpu = x1_gen.detach().cpu() if x1_gen.is_cuda else x1_gen.detach()
+    
+    # # 1. Compute coverage metrics
+    # print("Computing coverage metrics...")
+    # coverage_results = compute_checkerboard_coverage(x1_gen_cpu, SphereManifold())
+    
+    # # 2. Compute C2ST metrics
+    # print("Computing C2ST metrics...")
+    # c2st_results = compute_c2st_score(
+    #     x1_real_cpu, 
+    #     x1_gen_cpu, 
+    #     use_2d_unwrapped=True,
+    #     sphere_manifold=SphereManifold(),  # Pass sphere manifold
+    #     num_runs=3,
+    #     num_epochs=50
+    # )
+    
+    # # Save results to file
+    # with open(os.path.join(folder, 'coverage_c2st_metrics.txt'), 'w') as f:
+    #     f.write("COVERAGE AND C2ST METRICS (SPHERE)\n")
+    #     f.write("=" * 40 + "\n\n")
         
-        f.write("COVERAGE METRICS\n")
-        f.write("-" * 20 + "\n")
-        f.write(f"Coverage (% in correct regions): {coverage_results['coverage']*100:.2f}%\n")
-        f.write(f"Modes covered: {coverage_results['modes_covered']}/{coverage_results['total_modes']}\n")
-        f.write(f"Uniformity CV: {coverage_results['uniformity_cv']:.4f} (lower is better)\n")
-        f.write(f"Samples per mode: {coverage_results['samples_per_mode']}\n\n")
+    #     f.write("COVERAGE METRICS\n")
+    #     f.write("-" * 20 + "\n")
+    #     f.write(f"Coverage (% in correct regions): {coverage_results['coverage']*100:.2f}%\n")
+    #     f.write(f"Modes covered: {coverage_results['modes_covered']}/{coverage_results['total_modes']}\n")
+    #     f.write(f"Uniformity CV: {coverage_results['uniformity_cv']:.4f} (lower is better)\n")
+    #     f.write(f"Samples per mode: {coverage_results['samples_per_mode']}\n\n")
         
-        f.write("C2ST METRICS\n")
-        f.write("-" * 15 + "\n")
-        f.write(f"C2ST Accuracy: {c2st_results['c2st_accuracy']*100:.2f}% ± {c2st_results['c2st_std']*100:.2f}%\n")
-        f.write(f"C2ST Score: {c2st_results['c2st_score']:.4f}\n")
-        f.write(f"Interpretation: ")
-        if c2st_results['c2st_accuracy'] < 0.55:
-            f.write("Excellent - distributions are nearly indistinguishable\n")
-        elif c2st_results['c2st_accuracy'] < 0.65:
-            f.write("Good - minor differences detected\n")
-        elif c2st_results['c2st_accuracy'] < 0.75:
-            f.write("Moderate - noticeable differences\n")
-        else:
-            f.write("Poor - significant differences detected\n")
+    #     f.write("C2ST METRICS\n")
+    #     f.write("-" * 15 + "\n")
+    #     f.write(f"C2ST Accuracy: {c2st_results['c2st_accuracy']*100:.2f}% ± {c2st_results['c2st_std']*100:.2f}%\n")
+    #     f.write(f"C2ST Score: {c2st_results['c2st_score']:.4f}\n")
+    #     f.write(f"Interpretation: ")
+    #     if c2st_results['c2st_accuracy'] < 0.55:
+    #         f.write("Excellent - distributions are nearly indistinguishable\n")
+    #     elif c2st_results['c2st_accuracy'] < 0.65:
+    #         f.write("Good - minor differences detected\n")
+    #     elif c2st_results['c2st_accuracy'] < 0.75:
+    #         f.write("Moderate - noticeable differences\n")
+    #     else:
+    #         f.write("Poor - significant differences detected\n")
         
-        f.write("\nPERFORMANCE METRICS\n")
-        f.write("-" * 20 + "\n")
-        f.write(f"Training Time: {training_time:.2f} seconds ({training_time/60:.2f} minutes)\n")
-        f.write(f"Generation Time: {generation_time:.2f} seconds for {len(x1_gen)} samples\n")
-        if generation_time > 0:
-            f.write(f"Generation Rate: {len(x1_gen)/generation_time:.1f} samples/second\n")
+    #     f.write("\nPERFORMANCE METRICS\n")
+    #     f.write("-" * 20 + "\n")
+    #     f.write(f"Training Time: {training_time:.2f} seconds ({training_time/60:.2f} minutes)\n")
+    #     f.write(f"Generation Time: {generation_time:.2f} seconds for {len(x1_gen)} samples\n")
+    #     if generation_time > 0:
+    #         f.write(f"Generation Rate: {len(x1_gen)/generation_time:.1f} samples/second\n")
     
-    print(f"Coverage and C2ST results saved to {folder}coverage_c2st_metrics.txt")
-    print(f"Coverage: {coverage_results['coverage']*100:.1f}%, C2ST Accuracy: {c2st_results['c2st_accuracy']*100:.1f}%")
+    # print(f"Coverage and C2ST results saved to {folder}coverage_c2st_metrics.txt")
+    # print(f"Coverage: {coverage_results['coverage']*100:.1f}%, C2ST Accuracy: {c2st_results['c2st_accuracy']*100:.1f}%")
 
-    # plot the paths with ground truth x1
-    n_snapshots = len(times_to_show)
-    n_cols      = n_snapshots + 1   # <-- one extra for the real x1
-    fig, axs = plt.subplots(
-        1, n_cols,
-        figsize=(6 * n_cols, 5),
-        subplot_kw={"projection": "3d"},
-        constrained_layout=True,
-    )
+    # # plot the paths with ground truth x1
+    # n_snapshots = len(times_to_show)
+    # n_cols      = n_snapshots + 1   # <-- one extra for the real x1
+    # fig, axs = plt.subplots(
+    #     1, n_cols,
+    #     figsize=(6 * n_cols, 5),
+    #     subplot_kw={"projection": "3d"},
+    #     constrained_layout=True,
+    # )
 
-    # draw your time‐snapshots in cols 0…n_snapshots-1
-    for i, t_end in enumerate(times_to_show):
-        t_idx = torch.searchsorted(t_span, torch.tensor(t_end)).item()
-        x_t = torch2npy(sols[t_idx])
-        axs[i] = data_on_sphere(x_t, axs[i])
-        axs[i] = mesh_checkerboard_on_sphere(axs[i])
-        title = "t=1.00" if t_end == 0.99 else f"t={t_end:.2f}"
-        axs[i].set_title(title)
+    # # draw your time‐snapshots in cols 0…n_snapshots-1
+    # for i, t_end in enumerate(times_to_show):
+    #     t_idx = torch.searchsorted(t_span, torch.tensor(t_end)).item()
+    #     x_t = torch2npy(sols[t_idx])
+    #     axs[i] = data_on_sphere(x_t, axs[i])
+    #     axs[i] = mesh_checkerboard_on_sphere(axs[i])
+    #     title = "t=1.00" if t_end == 0.99 else f"t={t_end:.2f}"
+    #     axs[i].set_title(title)
 
-    # now in the last column, plot your real x1
-    # NOTE: x1 should be in ambient coords on the sphere (shape [N,3])
-    real_x1 = trainloader.dataset[:10000].to(device)
-    axs[-1] = data_on_sphere(torch2npy(real_x1), axs[-1])
-    axs[-1] = mesh_checkerboard_on_sphere(axs[-1])
-    axs[-1].set_title("x₁")
+    # # now in the last column, plot your real x1
+    # # NOTE: x1 should be in ambient coords on the sphere (shape [N,3])
+    # real_x1 = trainloader.dataset[:10000].to(device)
+    # axs[-1] = data_on_sphere(torch2npy(real_x1), axs[-1])
+    # axs[-1] = mesh_checkerboard_on_sphere(axs[-1])
+    # axs[-1].set_title("x₁")
 
-    fig.subplots_adjust(wspace=0.01, left=0.02, right=0.98)
-    fig.savefig(os.path.join(folder, "probability_paths.png"),
-                dpi=300, bbox_inches='tight', pad_inches=0.02)
-    wandb.log({"probability_paths": wandb.Image(plt)})
-    plt.close(fig)
+    # fig.subplots_adjust(wspace=0.01, left=0.02, right=0.98)
+    # fig.savefig(os.path.join(folder, "probability_paths.png"),
+    #             dpi=300, bbox_inches='tight', pad_inches=0.02)
+    # wandb.log({"probability_paths": wandb.Image(plt)})
+    # plt.close(fig)
 
-    # Save individual sphere images without titles
-    print("Saving individual sphere images...")
-    individual_folder = os.path.join(folder, "individual_spheres")
-    os.makedirs(individual_folder, exist_ok=True)
+    # # Save individual sphere images without titles
+    # print("Saving individual sphere images...")
+    # individual_folder = os.path.join(folder, "individual_spheres")
+    # os.makedirs(individual_folder, exist_ok=True)
 
-    # Save each timestep as an individual image
-    for i, t_end in enumerate(times_to_show):
-        t_idx = torch.searchsorted(t_span, torch.tensor(t_end)).item()
-        x_t = torch2npy(sols[t_idx])
+    # # Save each timestep as an individual image
+    # for i, t_end in enumerate(times_to_show):
+    #     t_idx = torch.searchsorted(t_span, torch.tensor(t_end)).item()
+    #     x_t = torch2npy(sols[t_idx])
 
-        fig_single = plt.figure(figsize=(6, 5))
-        ax_single = fig_single.add_subplot(111, projection='3d')
-        ax_single = data_on_sphere(x_t, ax_single, color="magenta")
-        ax_single = mesh_checkerboard_on_sphere(ax_single)
+    #     fig_single = plt.figure(figsize=(6, 5))
+    #     ax_single = fig_single.add_subplot(111, projection='3d')
+    #     ax_single = data_on_sphere(x_t, ax_single, color="magenta")
+    #     ax_single = mesh_checkerboard_on_sphere(ax_single)
 
-        # Save with timestep in filename
-        filename = f"sphere_t_{t_end:.2f}.png" if t_end != 0.99 else "sphere_t_1.00.png"
-        fig_single.savefig(os.path.join(individual_folder, filename),
-                          dpi=300, bbox_inches='tight', pad_inches=0.02)
-        plt.close(fig_single)
+    #     # Save with timestep in filename
+    #     filename = f"sphere_t_{t_end:.2f}.png" if t_end != 0.99 else "sphere_t_1.00.png"
+    #     fig_single.savefig(os.path.join(individual_folder, filename),
+    #                       dpi=300, bbox_inches='tight', pad_inches=0.02)
+    #     plt.close(fig_single)
 
-    # Save the real x1 as a separate image
-    fig_real = plt.figure(figsize=(6, 5))
-    ax_real = fig_real.add_subplot(111, projection='3d')
-    ax_real = data_on_sphere(torch2npy(real_x1), ax_real, color="magenta")
-    ax_real = mesh_checkerboard_on_sphere(ax_real)
-    fig_real.savefig(os.path.join(individual_folder, "sphere_x1_real.png"),
-                     dpi=300, bbox_inches='tight', pad_inches=0.02)
-    plt.close(fig_real)
+    # # Save the real x1 as a separate image
+    # fig_real = plt.figure(figsize=(6, 5))
+    # ax_real = fig_real.add_subplot(111, projection='3d')
+    # ax_real = data_on_sphere(torch2npy(real_x1), ax_real, color="magenta")
+    # ax_real = mesh_checkerboard_on_sphere(ax_real)
+    # fig_real.savefig(os.path.join(individual_folder, "sphere_x1_real.png"),
+    #                  dpi=300, bbox_inches='tight', pad_inches=0.02)
+    # plt.close(fig_real)
 
-    print(f"Individual sphere images saved to {individual_folder}")
+    # print(f"Individual sphere images saved to {individual_folder}")
 
-    # Close wandb run
+    #Close wandb run
     wandb.finish()
 
 if __name__ == "__main__":

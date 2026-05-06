@@ -111,6 +111,7 @@ class SphereManifold(BaseManifold):
         Returns:
             torch.Tensor: Points in R^n
         """
+        samples = samples.view(samples.shape[0], -1)
         batch_size, dim = samples.shape
         north_pole = self._get_north_pole(batch_size, dim-1, samples.device)
         

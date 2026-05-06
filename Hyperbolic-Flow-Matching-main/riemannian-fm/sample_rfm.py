@@ -1,10 +1,11 @@
+import tqdm
 import torch
 from manifm.model_pl import ManifoldFMLitModule
 from omegaconf import OmegaConf
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.06/145911"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.05/172728"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -41,28 +42,24 @@ def get_v(x, t_val):
 
 
 @torch.no_grad()
-def integrate_flow(z_start, steps=100, start_t=0.0):
+def integrate_flow(z_start, steps=1000, start_t=0.0):
     """Generic Euler integrator for the manifold flow."""
     z = z_start.clone().to(DEVICE)
     dt = (1.0 - start_t) / steps
 
-    for i in range(steps):
+    for i in tqdm.tqdm(range(steps), desc="Integrating flow"):
         current_t = start_t + dt * i
         v = get_v(z, current_t)
 
         # Euler Step + Manifold Projection
-        if manifold is not None:
-            z = manifold.expmap(z, dt * v)
-        else:
-            z = z + dt * v
-        
+        z = manifold.expmap(z, dt * v)
         z = manifold.projx(z)
 
     return z
 
 
 @torch.no_grad()
-def improve_encodings(path_to_existing, noise_std=0.0, blend_factor=1.0):
+def improve_encodings(path_to_existing, noise_std=1.0, blend_factor=1.0):
     """Loads existing .pt file and pushes encodings through the flow."""
     print(f"Loading existing encodings from {path_to_existing}")
     data = torch.load(path_to_existing, map_location=DEVICE)
@@ -81,7 +78,7 @@ def improve_encodings(path_to_existing, noise_std=0.0, blend_factor=1.0):
     noise = torch.randn_like(z_existing) * noise_std
     z = z_existing + noise
     z = manifold.projx(z)
-    z_improved = integrate_flow(z, steps=20, start_t=0.95)  # Start close to the end of the flow
+    z_improved = integrate_flow(z, steps=1000, start_t=0.0)  # Start close to the end of the flow
 
     z_final = (1 - blend_factor) * z_existing + blend_factor * z_improved
     z_final = manifold.projx(z_final)
@@ -89,14 +86,14 @@ def improve_encodings(path_to_existing, noise_std=0.0, blend_factor=1.0):
     return z_improved, labels, split_ids, split_names
 
 
-MODE = "generate"  # Switch between "generate" or "improve"
+MODE = "improve"  # Switch between "generate" or "improve"
 EXISTING_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
 
 if MODE == "generate":
-    n_samples = 5000
+    n_samples = 50000
     z_init = manifold.random_base(n_samples, dim).to(DEVICE)
     labels = torch.zeros(n_samples, dtype=torch.long)
-    z_final = integrate_flow(z_init, steps=1000)
+    z_final = integrate_flow(z_init, steps=1000, start_t=0.0)
     split_ids = torch.zeros(n_samples, dtype=torch.long)
     split_names = ["generated"]
 else:
@@ -109,6 +106,6 @@ torch.save({
     "labels": labels if labels is not None else None,
     "split_ids": split_ids,
     "split_names": split_names,
-}, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_class_9_encodings.pt")
+}, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.pt")
 
 print(f"Done. Saved shape: {z_final.shape}")

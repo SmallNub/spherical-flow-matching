@@ -3,12 +3,14 @@ import os
 
 INPUT = "workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
 OUTPUT_DIR = "workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data"
+CLASS_CONDITIONAL = True  # If True, creates separate .pt files per class. If False, creates a single all.pt file.
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 data = torch.load(INPUT)
 
 Z = data["encodings"].float()  # IMPORTANT: cast to float32
+labels = data["labels"]
 split_ids = data["split_ids"]
 
 # -------------------------------------------------
@@ -42,6 +44,7 @@ def normalize(z):
     return z
 
 
+
 train = normalize(train)
 val = normalize(val)
 test = normalize(test)
@@ -49,9 +52,21 @@ test = normalize(test)
 # -------------------------------------------------
 # SAVE
 # -------------------------------------------------
-Z = torch.cat([train, val, test], dim=0)
 
-torch.save(Z, os.path.join(OUTPUT_DIR, "all.pt"))
+if CLASS_CONDITIONAL:
+    classes = torch.unique(labels).tolist()
+
+    for c in classes:
+        class_mask = labels == c
+        train_c = train[class_mask[:len(train)]]
+        val_c = val[class_mask[len(train):len(train)+len(val)]]
+        test_c = test[class_mask[len(train)+len(val):]]
+
+        Z_all = torch.cat([train_c, val_c, test_c], dim=0)
+        torch.save(Z_all, os.path.join(OUTPUT_DIR, f"class_{int(c)}.pt"))
+
+else:
+    torch.save(Z, os.path.join(OUTPUT_DIR, "all.pt"))
 
 print("Saved:", Z.shape)
 

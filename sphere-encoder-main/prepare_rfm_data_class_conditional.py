@@ -26,23 +26,13 @@ for c in classes:
     class_mask = labels == c
     Z_c = Z[class_mask]
 
-    if split_ids is not None:
-        split_c = split_ids[class_mask]
+    N = Z_c.shape[0]
+    # perm = torch.randperm(N)
+    # Z_c = Z_c[perm]
 
-        train_full = Z_c[split_c == 0]
-        test = Z_c[split_c == 1]
-
-        n_val = len(train_full) // 10
-        train = train_full[:-n_val]
-        val = train_full[-n_val:]
-    else:
-        N = Z_c.shape[0]
-        perm = torch.randperm(N)
-        Z_c = Z_c[perm]
-
-        train = Z_c[: int(0.8 * N)]
-        val = Z_c[int(0.8 * N): int(0.9 * N)]
-        test = Z_c[int(0.9 * N):]
+    train = Z_c[: int(0.8 * N)]
+    val = Z_c[int(0.8 * N): int(0.9 * N)]
+    test = Z_c[int(0.9 * N):]
 
     train = normalize(train)
     val = normalize(val)
@@ -50,16 +40,7 @@ for c in classes:
 
     Z_all = torch.cat([train, val, test], dim=0)
 
-    torch.save(
-        {
-            "Z": Z_all,
-            "train_size": len(train),
-            "val_size": len(val),
-            "test_size": len(test),
-            "class": int(c),
-        },
-        os.path.join(OUTPUT_DIR, f"class_{int(c)}.pt")
-    )
+    torch.save(Z_all, os.path.join(OUTPUT_DIR, f"class_{int(c)}.pt"))
 
     print(f"class {int(c)}")
     print("all:", Z_all.shape)

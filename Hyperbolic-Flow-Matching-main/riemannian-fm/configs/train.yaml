@@ -6,9 +6,8 @@ defaults:
   - override hydra/hydra_logging: colorlog
 
 data: sphere_encodings  # {volcano,earthquake,fire,flood}
-sphere_data_path: /home/nub/UvA/Master/DL2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data/all.pt
+sphere_data_path: /home/sakr/UvA/DL 2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data/class_9.pt
 
-earth_datadir: /checkpoint/${oc.env:USER}/data/earth_data
 rna_datadir: /checkpoint/${oc.env:USER}/data/rna
 top500_datadir: /checkpoint/${oc.env:USER}/data/top500
 mesh_datadir: /checkpoint/${oc.env:USER}/data/mesh
@@ -50,7 +49,7 @@ model:
   metric_normalize: False
 
 optim:
-  num_iterations: 10000
+  num_iterations: 1000
   batch_size: 1024
   val_batch_size: 128
 
@@ -67,7 +66,7 @@ div_mode: exact
 normalize_loglik: False
 early_stopping_patience: 200  # this is affected by val_every
 
-use_wandb: False
+use_wandb: True
 
 resume: null
 

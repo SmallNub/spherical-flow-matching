@@ -19,8 +19,8 @@ class Sphere(geoopt_Sphere):
             math.lgamma(dim / 2) - (math.log(2) + (dim / 2) * math.log(math.pi)),
         )
 
-    #def random_base(self, *args, **kwargs):
-    #    return self.random_uniform(*args, **kwargs)
+    def random_base(self, *args, **kwargs):
+       return self.random_uniform(*args, **kwargs)
 
     def base_logprob(self, *args, **kwargs):
         return self.uniform_logprob(*args, **kwargs)

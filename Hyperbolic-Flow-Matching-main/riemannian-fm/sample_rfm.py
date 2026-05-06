@@ -4,7 +4,7 @@ from omegaconf import OmegaConf
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.05/172728"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.06/145911"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -51,7 +51,11 @@ def integrate_flow(z_start, steps=100, start_t=0.0):
         v = get_v(z, current_t)
 
         # Euler Step + Manifold Projection
-        z = z + dt * v
+        if manifold is not None:
+            z = manifold.expmap(z, dt * v)
+        else:
+            z = z + dt * v
+        
         z = manifold.projx(z)
 
     return z
@@ -85,14 +89,14 @@ def improve_encodings(path_to_existing, noise_std=0.0, blend_factor=1.0):
     return z_improved, labels, split_ids, split_names
 
 
-MODE = "improve"  # Switch between "generate" or "improve"
+MODE = "generate"  # Switch between "generate" or "improve"
 EXISTING_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
 
 if MODE == "generate":
-    n_samples = 50000
+    n_samples = 5000
     z_init = manifold.random_base(n_samples, dim).to(DEVICE)
     labels = torch.zeros(n_samples, dtype=torch.long)
-    z_final = integrate_flow(z_init, steps=100)
+    z_final = integrate_flow(z_init, steps=1000)
     split_ids = torch.zeros(n_samples, dtype=torch.long)
     split_names = ["generated"]
 else:
@@ -105,6 +109,6 @@ torch.save({
     "labels": labels if labels is not None else None,
     "split_ids": split_ids,
     "split_names": split_names,
-}, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.pt")
+}, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_class_9_encodings.pt")
 
 print(f"Done. Saved shape: {z_final.shape}")

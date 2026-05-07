@@ -24,7 +24,7 @@ source activate sphere_hyper
 ./run.sh train.py \
   --dataset_name animal-faces \
   --image_size 256 \
-  --batch_size_per_rank 128 \
+  --batch_size_per_rank 64 \
   --warmup_epochs 10 \
   --epochs 1000 \
   --early_stop_patience 15 \

@@ -1,10 +1,25 @@
+#!/bin/bash
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree
 
-#!/usr/bin/env bash
+
+#SBATCH --job-name=sphere-encoder-af
+#SBATCH --output=slurm/sphere-encoder-af%j.log
+#SBATCH --error=slurm/sphere-encoder-af%j.err
+#SBATCH --time=48:00:00
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=8
+#SBATCH --ntasks=1
+
+module purge
+module load 2024
+module load Anaconda3/2024.06-1
+
+source activate sphere_hyper
 
 ./run.sh train.py \
   --dataset_name animal-faces \

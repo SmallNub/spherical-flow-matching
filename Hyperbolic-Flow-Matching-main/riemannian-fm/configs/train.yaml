@@ -6,7 +6,7 @@ defaults:
   - override hydra/hydra_logging: colorlog
 
 data: sphere_encodings  # {volcano,earthquake,fire,flood}
-sphere_data_path: /home/sakr/UvA/DL 2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data/class_9.pt
+sphere_data_path: /home/sakr/UvA/DL 2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data/all.pt
 
 rna_datadir: /checkpoint/${oc.env:USER}/data/rna
 top500_datadir: /checkpoint/${oc.env:USER}/data/top500

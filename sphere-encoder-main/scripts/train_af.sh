@@ -9,13 +9,15 @@
 ./run.sh train.py \
   --dataset_name animal-faces \
   --image_size 256 \
+  --batch_size_per_rank 128 \
   --warmup_epochs 10 \
   --epochs 1000 \
+  --early_stop_patience 15 \
   --compression_ratio 1.5 \
   --noise_sigma_max_angle 85 \
-  --cond_generator False \
-  --vit_enc_model_size base \
-  --vit_dec_model_size base \
+  --cond_generator True \
+  --vit_enc_model_size small \
+  --vit_dec_model_size small \
   --vit_enc_latent_mlp_mixer_depth 4 \
   --vit_dec_latent_mlp_mixer_depth 4 \
   --affine_latent_mlp_mixer True \

@@ -3,7 +3,7 @@ import os
 
 INPUT = "workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
 OUTPUT_DIR = "workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data"
-CLASS_CONDITIONAL = True  # If True, creates separate .pt files per class. If False, creates a single all.pt file.
+CLASS_CONDITIONAL = False  # If True, creates separate .pt files per class. If False, creates a single all.pt file.
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -37,12 +37,9 @@ else:
 # -------------------------------------------------
 def normalize(z):
     N, T, D = z.shape  # e.g. 256, 4
-
     z = z.reshape(N, T * D)   # [N, 1024]
-
     z = z / z.norm(dim=-1, keepdim=True)
     return z
-
 
 
 train = normalize(train)

@@ -127,7 +127,7 @@ def decode_and_save(model, z, y, save_dir, args, ptdtype, device):
 
         # IMPORTANT: normalize latents (sphere models NEED this)
         if args.normalize_latents:
-            z_batch = F.normalize(z_batch, dim=-1)
+            z_batch = model.spherify(z_batch)
 
         with torch.autocast(device_type="cuda", dtype=ptdtype):
             x_rec = decode_from_latents(model, z_batch, y_batch)

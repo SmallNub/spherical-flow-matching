@@ -20,7 +20,7 @@ class Sphere(geoopt_Sphere):
         )
 
     def random_base(self, *args, **kwargs):
-       return self.random_uniform(*args, **kwargs)
+        return self.random_uniform(*args, **kwargs)
 
     def base_logprob(self, *args, **kwargs):
         return self.uniform_logprob(*args, **kwargs)

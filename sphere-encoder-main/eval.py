@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import datetime
+import math
 import glob
 import json
 import argparse
@@ -388,13 +389,17 @@ def evaluate(
     os.makedirs(gen_imgs_dir, exist_ok=True)
     logger.info(f"save output images to: {gen_imgs_dir}")
 
-    assert args.num_eval_samples % (ddp_world_size * args.batch_size_per_rank) == 0, (
-        f"got num_eval_samples={args.num_eval_samples}, "
-        f"world_size={ddp_world_size}, "
-        f"batch_size_per_rank={args.batch_size_per_rank}"
-    )
-    num_batches_per_rank = int(
-        args.num_eval_samples / ddp_world_size / args.batch_size_per_rank
+    if task_mode == "generation":
+        assert args.num_eval_samples % (ddp_world_size * args.batch_size_per_rank) == 0, (
+            f"got num_eval_samples={args.num_eval_samples}, "
+            f"world_size={ddp_world_size}, "
+            f"batch_size_per_rank={args.batch_size_per_rank}"
+        )
+    
+    num_batches_per_rank = math.ceil(
+        args.num_eval_samples /
+        ddp_world_size /
+        args.batch_size_per_rank
     )
 
     class_ids = None
@@ -425,14 +430,14 @@ def evaluate(
 
         with torch.autocast(device_type="cuda", dtype=ptdtype):
             if is_rec:
+                imgs = next(loader)[0].to(device)
                 if num_classes > 0:
                     clss = torch.full(
-                        (args.batch_size_per_rank,),
-                        num_classes,  # empty class
+                        (imgs.shape[0],),
+                        num_classes,
                         dtype=torch.long,
                         device=device,
                     )
-                imgs = next(loader)[0].to(device)
                 outs = model.reconstruct(imgs, clss, sampling=False)
             else:
                 with (
@@ -551,7 +556,10 @@ def calc_metrics(
 
     img_fnames = os.listdir(gen_imgs_dir)
     num_imgs = len(img_fnames)
-    assert num_imgs == num_eval_samples
+    if task_mode == "generation":
+        assert num_imgs == num_eval_samples
+    else:
+        num_eval_samples = num_imgs
     logger.info(f"total number of images to eval: {num_imgs}")
 
     report_prc = fid_ref_dir is not None and report_prc

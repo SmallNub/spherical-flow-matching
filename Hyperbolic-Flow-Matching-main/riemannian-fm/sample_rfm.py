@@ -5,7 +5,19 @@ from omegaconf import OmegaConf
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.05/172728"
+CHECK_UNIFORMITY = False
+RUNTIME_STATS = False
+
+NUM_CLASSES = 10
+STEPS = 100
+NOISE_STD = 0.001
+START_T = 0.9
+BLEND_FACTOR = 1.0
+
+MODE = "improve"  # Switch between "generate" or "improve"
+INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
+
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.11/014429"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -15,6 +27,14 @@ model.eval()
 
 manifold = model.manifold
 dim = model.dim
+
+
+def dummy_labels(n_samples=50000):
+    labels = []
+    for i in range(NUM_CLASSES):
+        class_i = torch.full((n_samples // NUM_CLASSES,), i, dtype=torch.long)
+        labels.append(class_i)
+    return torch.cat(labels, dim=0)
 
 
 def normalize(z):
@@ -32,36 +52,40 @@ def unnormalize(z_flat, T=256, D=4):
     return z
 
 
-def get_v(t_val, x):
+def get_v(t_val, x, y=None):
     t = torch.full((x.shape[0], 1), t_val, device=DEVICE)
-    return model.vecfield(t, x)
+    return model.vecfield(t, x, y=y)
 
 
 @torch.no_grad()
-def integrate_flow(z_start, steps=1000, start_t=0.0):
+def integrate_flow(z_start, labels=None, steps=1000, start_t=0.0):
     """Generic Euler integrator for the manifold flow."""
-    z_old = z_start.clone().to(DEVICE)
+    if labels is not None:
+        labels = labels.to(DEVICE)
+
+    z_prev = z_start.clone().to(DEVICE)
     dt = (1.0 - start_t) / steps
 
     for i in tqdm.tqdm(range(steps), desc="Integrating flow"):
         current_t = start_t + dt * i
-        v = get_v(current_t, z_old)
+        v = get_v(current_t, z_prev, y=labels)
         u = dt * v
-        print("Velocity norm:", u.norm(dim=-1).mean())
 
         # Euler Step + Manifold Projection
-        z = manifold.expmap(z_old, dt * v)
+        z = manifold.expmap(z_prev, u)
         z = manifold.projx(z)
 
-        measure_manifold_distance(z, z_old)
-        z_old = z
+        if RUNTIME_STATS:
+            print("Velocity norm:", u.norm(dim=-1).mean())
+            measure_manifold_distance(z, z_prev)
+        z_prev = z
 
-    measure_manifold_distance(z_old, z_start)
-    return z
+    measure_manifold_distance(z_prev, z_start)
+    return z_prev
 
 
 @torch.no_grad()
-def improve_encodings(path_to_existing, noise_std=0.0, blend_factor=1.0):
+def improve_encodings(path_to_existing, noise_std=NOISE_STD, blend_factor=BLEND_FACTOR, start_t=START_T):
     """Loads existing .pt file and pushes encodings through the flow."""
     print(f"Loading existing encodings from {path_to_existing}")
     data = torch.load(path_to_existing, map_location=DEVICE)
@@ -70,28 +94,32 @@ def improve_encodings(path_to_existing, noise_std=0.0, blend_factor=1.0):
     split_ids = data.get("split_ids")
     split_names = data.get("split_names")
 
-    for label in labels.unique():
-        mask = labels == label
-        z_label = z_existing[mask]
-        check_hypersphere_uniformity(z_label, text=f"Label {label}")
-        z_label = normalize(z_label)
-        z_label = manifold.projx(z_label)
-        check_uniformity(z_label)
+    if CHECK_UNIFORMITY:
+        for label in labels.unique():
+            mask = labels == label
+            z_label = z_existing[mask]
+            check_hypersphere_uniformity(z_label, text=f"Label {label}")
+            z_label = normalize(z_label)
+            z_label = manifold.projx(z_label)
+            check_uniformity(z_label)
 
-    check_hypersphere_uniformity(z_existing)
+        check_hypersphere_uniformity(z_existing)
+
     z_existing = normalize(z_existing)
     z_existing = manifold.projx(z_existing)
-    check_uniformity(z_existing)
+
+    if CHECK_UNIFORMITY:
+        check_uniformity(z_existing)
 
     # If labels are None but the decoder needs them, initialize zeros
     if labels is None:
-        labels = torch.zeros(z_existing.shape[0], dtype=torch.long)
+        labels = dummy_labels(z_existing.shape[0])
 
     print(f"Refining {z_existing.shape[0]} samples...")
     noise = torch.randn_like(z_existing) * noise_std
     z_noise = z_existing + noise
     z_noise = manifold.projx(z_noise)
-    z_improved = integrate_flow(z_noise, steps=1, start_t=0.99)  # Start close to the end of the flow
+    z_improved = integrate_flow(z_noise, torch.full((z_noise.shape[0],), 1, dtype=torch.long).to(DEVICE), steps=STEPS, start_t=start_t)
 
     z_final = (1 - blend_factor) * z_existing + blend_factor * z_improved
     z_final = manifold.projx(z_final)
@@ -169,8 +197,8 @@ def check_hypersphere_uniformity(z, text="Raw Encodings"):
     z_flat = z.reshape(N, total_dim)
 
     # 1. Check Radius (RMS Norm)
-    # The paper says RMS Norm = sqrt(total_dim) / total_dim? 
-    # Usually, RMSNorm(x) = sqrt(mean(x^2)). 
+    # The paper says RMS Norm = sqrt(total_dim) / total_dim?
+    # Usually, RMSNorm(x) = sqrt(mean(x^2)).
     # If they define the sphere as ||z|| = sqrt(D), let's check the norm:
     norms = torch.norm(z_flat, p=2, dim=-1)
     avg_norm = norms.mean().item()
@@ -200,29 +228,26 @@ def check_hypersphere_uniformity(z, text="Raw Encodings"):
     print(f"Avg Abs CosSim:    {avg_abs_cos:.4f} (Closer to 0 is more uniform)")
 
     # Interpretation
-    target_cos = (1 / total_dim)**0.5 # Expected cos sim for random 1024-D vectors
+    target_cos = (1 / total_dim)**0.5  # Expected cos sim for random 1024-D vectors
     print(f"Theoretical Random CosSim: ~{target_cos:.4f}")
 
 
-MODE = "improve"  # Switch between "generate" or "improve"
-EXISTING_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
-
 if MODE == "generate":
-    n_samples = 50000
+    n_samples = 10000
     z_init = manifold.random_base(n_samples, dim).to(DEVICE)
     z_init = manifold.projx(z_init)
-    labels = torch.zeros(n_samples, dtype=torch.long)
-    z_final = integrate_flow(z_init, steps=1000, start_t=0.0)
+    labels = dummy_labels(n_samples)
+    # z_final = integrate_flow(z_init, labels, steps=STEPS, start_t=START_T)
     split_ids = torch.zeros(n_samples, dtype=torch.long)
     split_names = ["generated"]
 else:
-    z_final, labels, split_ids, split_names = improve_encodings(EXISTING_PATH)
+    z_final, labels, split_ids, split_names = improve_encodings(INPUT_PATH)
 
 z_final = unnormalize(z_final.cpu())
 
 # torch.save({
 #     "encodings": z_final,
-#     "labels": labels if labels is not None else None,
+#     "labels": labels,
 #     "split_ids": split_ids,
 #     "split_names": split_names,
 # }, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.pt")

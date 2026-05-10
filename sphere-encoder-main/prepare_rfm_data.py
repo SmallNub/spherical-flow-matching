@@ -63,11 +63,15 @@ if CLASS_CONDITIONAL:
         torch.save(Z_all, os.path.join(OUTPUT_DIR, f"class_{int(c)}.pt"))
 
 else:
-    torch.save(Z, os.path.join(OUTPUT_DIR, "all.pt"))
+    output = {
+        "encodings": torch.cat([train, val, test], dim=0),
+        "labels": labels,
+    }
+    torch.save(output, os.path.join(OUTPUT_DIR, "all.pt"))
 
-print("Saved:", Z.shape)
+    print("Saved:", output["encodings"].shape)
 
-print("Saved RFM dataset:")
-print("train:", train.shape)
-print("val:", val.shape)
-print("test:", test.shape)
+    print("Saved RFM dataset:")
+    print("train:", train.shape)
+    print("val:", val.shape)
+    print("test:", test.shape)

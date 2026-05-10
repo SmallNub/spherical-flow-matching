@@ -35,6 +35,8 @@ from manifm.manifolds import geodesic
 from manifm.mesh_utils import trimesh_to_vtk, points_to_vtk
 from manifm.solvers import projx_integrator_return_last, projx_integrator
 
+from manifm.model.model_override import FlowModelOverride
+
 
 def div_fn(u):
     """Accepts a function u:R^D -> R^D."""
@@ -64,12 +66,15 @@ class ManifoldFMLitModule(pl.LightningModule):
         self.model = EMA(
             Unbatch(  # Ensures vmap works.
                 ProjectToTangent(  # Ensures we can just use Euclidean divergence.
-                    tMLP(  # Vector field in the ambient space.
+                    FlowModelOverride(  # Vector field in the ambient space.
                         self.dim,
-                        d_model=cfg.model.d_model,
+                        hidden_dim=cfg.model.d_model,
                         num_layers=cfg.model.num_layers,
                         actfn=cfg.model.actfn,
                         fourier=cfg.model.get("fourier", None),
+                        dropout=cfg.model.dropout,
+                        num_classes=cfg.model.get("num_classes", None),
+                        null_chance=cfg.model.get("null_chance", 0.0),
                     ),
                     manifold=self.manifold,
                     metric_normalize=self.cfg.model.get("metric_normalize", False),
@@ -559,9 +564,11 @@ class ManifoldFMLitModule(pl.LightningModule):
         if isinstance(batch, dict):
             x0 = batch["x0"]
             x1 = batch["x1"]
+            y = batch["y"]
         else:
             x1 = batch
             x0 = self.manifold.random_base(x1.shape[0], self.dim).to(x1)
+            y = torch.zeros(1, dtype=torch.long).to(x1)
 
         N = x1.shape[0]
 
@@ -629,7 +636,7 @@ class ManifoldFMLitModule(pl.LightningModule):
             # x_t = torch.cat(x_t_list, dim=0)  # [N, dim]
             # u_t = torch.cat(u_t_list, dim=0)
 
-        diff = self.vecfield(t, x_t) - u_t
+        diff = self.vecfield(t, x_t, y) - u_t
         return self.manifold.inner(x_t, diff, diff).mean() / self.dim
 
     def training_step(self, batch: Any, batch_idx: int):

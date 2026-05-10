@@ -6,7 +6,7 @@ defaults:
   - override hydra/hydra_logging: colorlog
 
 data: sphere_encodings  # {volcano,earthquake,fire,flood}
-sphere_data_path: /home/nub/UvA/Master/DL2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt
+sphere_data_path: /home/nub/UvA/Master/DL2/spherical-flow-matching/sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/rfm_data/all.pt
 
 rna_datadir: /checkpoint/${oc.env:USER}/data/rna
 top500_datadir: /checkpoint/${oc.env:USER}/data/top500
@@ -40,16 +40,22 @@ mesh:
   rtol: 1e-5
 
 model:
-  d_model: 512
-  num_layers: 8
+  d_model: 1024
+  num_layers: 12
   actfn: swish
   fourier: null
   atol: 1e-7
   rtol: 1e-7
   metric_normalize: False
 
+  # New settings
+  dropout: 0.3
+  # Conditional settings
+  num_classes: 10
+  null_chance: 0.1
+
 optim:
-  num_iterations: 1000
+  num_iterations: 2000
   batch_size: 1024
   val_batch_size: 128
 

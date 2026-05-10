@@ -61,12 +61,16 @@ class Unbatch(nn.Module):
         super().__init__()
         self.vecfield = vecfield
 
-    def forward(self, t, x):
+    def forward(self, t, x, y=None):
         has_batch = x.ndim > 1
         if not has_batch:
             x = x.reshape(1, -1)
             t = t.reshape(-1)
-        v = self.vecfield(t, x)
+            if y is not None:
+                y = y.reshape(-1)
+
+        v = self.vecfield(t, x, y)
+
         if not has_batch:
             v = v[0]
         return v
@@ -81,7 +85,7 @@ class ProjectToTangent(nn.Module):
         self.manifold = manifold
         self.metric_normalize = metric_normalize
 
-    def forward(self, t, x):
+    def forward(self, t, x, y=None):
         if isinstance(self.manifold, Mesh):
             # Memory-efficient implementation for meshes.
             with torch.no_grad():
@@ -89,15 +93,15 @@ class ProjectToTangent(nn.Module):
                 vs = self.manifold.v[self.manifold.f[f_idx]]
                 n = face_normal(a=vs[:, 0], b=vs[:, 1], c=vs[:, 2])
             x = x + (n * (vs[:, 0] - x)).sum(-1, keepdim=True) * n
-            v = self.vecfield(t, x)
+            v = self.vecfield(t, x, y)
             v = v - (n * v).sum(-1, keepdim=True) * n
         if isinstance(self.manifold, SPD):
             # projx is expensive and we can just skip it since it doesn't affect divergence.
-            v = self.vecfield(t, x)
+            v = self.vecfield(t, x, y)
             v = self.manifold.proju(x, v)
         else:
             x = self.manifold.projx(x)
-            v = self.vecfield(t, x)
+            v = self.vecfield(t, x, y)
             v = self.manifold.proju(x, v)
 
         if self.metric_normalize and hasattr(self.manifold, "metric_normalized"):

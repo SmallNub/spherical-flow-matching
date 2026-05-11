@@ -8,22 +8,24 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 CHECK_UNIFORMITY = False
 RUNTIME_STATS = False
 
+N_SAMPLES = 10000
 NUM_CLASSES = 10
-STEPS = 100
-NOISE_STD = 0.001
-START_T = 0.9
+STEPS = 10
+NOISE_STD = 0.1
+START_T = 0.0
 BLEND_FACTOR = 1.0
 
 MODE = "improve"  # Switch between "generate" or "improve"
 INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.11/014429"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.12/001239"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
 
 model = ManifoldFMLitModule.load_from_checkpoint(ckpt_path, cfg=cfg).to(DEVICE)
 model.eval()
+model.compile()
 
 manifold = model.manifold
 dim = model.dim
@@ -77,10 +79,10 @@ def integrate_flow(z_start, labels=None, steps=1000, start_t=0.0):
 
         if RUNTIME_STATS:
             print("Velocity norm:", u.norm(dim=-1).mean())
-            measure_manifold_distance(z, z_prev)
+            measure_manifold_distance(z, z_prev, "Step Distance")
         z_prev = z
 
-    measure_manifold_distance(z_prev, z_start)
+    measure_manifold_distance(z_prev, z_start, "Start vs End")
     return z_prev
 
 
@@ -89,7 +91,7 @@ def improve_encodings(path_to_existing, noise_std=NOISE_STD, blend_factor=BLEND_
     """Loads existing .pt file and pushes encodings through the flow."""
     print(f"Loading existing encodings from {path_to_existing}")
     data = torch.load(path_to_existing, map_location=DEVICE)
-    z_existing = data["encodings"].float()
+    z_input = data["encodings"].float()
     labels = data.get("labels")
     split_ids = data.get("split_ids")
     split_names = data.get("split_names")
@@ -97,41 +99,46 @@ def improve_encodings(path_to_existing, noise_std=NOISE_STD, blend_factor=BLEND_
     if CHECK_UNIFORMITY:
         for label in labels.unique():
             mask = labels == label
-            z_label = z_existing[mask]
+            z_label = z_input[mask]
             check_hypersphere_uniformity(z_label, text=f"Label {label}")
             z_label = normalize(z_label)
             z_label = manifold.projx(z_label)
             check_uniformity(z_label)
 
-        check_hypersphere_uniformity(z_existing)
+        check_hypersphere_uniformity(z_input)
 
-    z_existing = normalize(z_existing)
-    z_existing = manifold.projx(z_existing)
+    z_input = normalize(z_input)
+    z_input = manifold.projx(z_input)
 
     if CHECK_UNIFORMITY:
-        check_uniformity(z_existing)
+        check_uniformity(z_input)
 
     # If labels are None but the decoder needs them, initialize zeros
     if labels is None:
-        labels = dummy_labels(z_existing.shape[0])
+        labels = dummy_labels(z_input.shape[0])
 
-    print(f"Refining {z_existing.shape[0]} samples...")
-    noise = torch.randn_like(z_existing) * noise_std
-    z_noise = z_existing + noise
+    print(f"Refining {z_input.shape[0]} samples...")
+    noise = torch.randn_like(z_input) * noise_std
+    z_noise = z_input + noise
     z_noise = manifold.projx(z_noise)
     z_improved = integrate_flow(z_noise, torch.full((z_noise.shape[0],), 1, dtype=torch.long).to(DEVICE), steps=STEPS, start_t=start_t)
 
-    z_final = (1 - blend_factor) * z_existing + blend_factor * z_improved
+    z_final = (1 - blend_factor) * z_input + blend_factor * z_improved
     z_final = manifold.projx(z_final)
 
-    z_init = manifold.random_base(len(z_existing), z_existing.shape[-1]).to(DEVICE)
+    z_init = manifold.random_base(len(z_input), z_input.shape[-1]).to(DEVICE)
     z_init = manifold.projx(z_init)
 
+    print("Clustering report:")
+    check_class_clustering(z_input, labels, text="Original Class Clustering")
+    check_class_clustering(z_noise, labels, text="Noise Class Clustering")
+    check_class_clustering(z_final, labels, text="Final Class Clustering")
+
     print("Manifold distance stats:")
-    measure_manifold_distance(z_init, z_existing, text="Full Noise vs Original")
-    measure_manifold_distance(z_noise, z_existing, text="Noise vs Original")
+    measure_manifold_distance(z_init, z_input, text="Full Noise vs Original")
+    measure_manifold_distance(z_noise, z_input, text="Noise vs Original")
     measure_manifold_distance(z_noise, z_final, text="Noise vs Improved")
-    measure_manifold_distance(z_final, z_existing, text="Improved vs Original")
+    measure_manifold_distance(z_final, z_input, text="Improved vs Original")
 
     return z_improved, labels, split_ids, split_names
 
@@ -232,13 +239,67 @@ def check_hypersphere_uniformity(z, text="Raw Encodings"):
     print(f"Theoretical Random CosSim: ~{target_cos:.4f}")
 
 
+@torch.no_grad()
+def check_class_clustering(z, labels, text="Class Clustering"):
+    """
+    Calculates the mean location for each class and measures how
+    tightly the samples are clustered around that mean.
+    """
+    z = z.to(DEVICE)
+    labels = labels.to(DEVICE)
+    unique_labels = torch.unique(labels)
+
+    print(f"\n=== {text} Report ===")
+    print(f"{'Label':<10} | {'Mean Norm':<10} | {'Avg Dist':<10} | {'Std Dist':<10} | {'Max Dist':<10}")
+    print("-" * 65)
+
+    all_stats = []
+
+    for label in unique_labels:
+        mask = (labels == label)
+        z_class = z[mask]
+
+        if z_class.shape[0] == 0:
+            continue
+
+        # 1. Calculate the Centroid (Mean) on the sphere
+        # We average in Euclidean space then project to the sphere surface
+        mean_vec = z_class.mean(dim=0, keepdim=True)
+        centroid = manifold.projx(mean_vec)
+
+        # Mean Vector Norm (tells us how 'un-uniform' the class is)
+        mean_norm = mean_vec.norm().item()
+
+        # 2. Geodesic Distances from every point in class to its centroid
+        # Broadcast centroid to match z_class shape
+        centroid_batch = centroid.expand(z_class.shape[0], -1)
+        distances = manifold.dist(z_class, centroid_batch)
+
+        avg_d = distances.mean().item()
+        std_d = distances.std().item()
+        max_d = distances.max().item()
+
+        print(f"{label.item():<10} | {mean_norm:<10.4f} | {avg_d:<10.4f} | {std_d:<10.4f} | {max_d:<10.4f}")
+
+        all_stats.append({
+            'label': label.item(),
+            'mean_norm': mean_norm,
+            'avg_dist': avg_d
+        })
+
+    # Global summary
+    avg_class_tightness = sum(s['avg_dist'] for s in all_stats) / len(all_stats)
+    print("-" * 65)
+    print(f"Global Average Class Tightness (Distance to Mean): {avg_class_tightness:.4f}")
+    return all_stats
+
+
 if MODE == "generate":
-    n_samples = 10000
-    z_init = manifold.random_base(n_samples, dim).to(DEVICE)
+    z_init = manifold.random_base(N_SAMPLES, dim).to(DEVICE)
     z_init = manifold.projx(z_init)
-    labels = dummy_labels(n_samples)
-    # z_final = integrate_flow(z_init, labels, steps=STEPS, start_t=START_T)
-    split_ids = torch.zeros(n_samples, dtype=torch.long)
+    labels = dummy_labels(N_SAMPLES)
+    z_final = integrate_flow(z_init, labels, steps=STEPS, start_t=START_T)
+    split_ids = torch.zeros(N_SAMPLES, dtype=torch.long)
     split_names = ["generated"]
 else:
     z_final, labels, split_ids, split_names = improve_encodings(INPUT_PATH)

@@ -65,6 +65,7 @@ def main(cfg: DictConfig):
 
     # Construct model
     model = ManifoldFMLitModule(cfg)
+    model.compile()
     print(model)
 
     # Checkpointing, logging, and other misc.

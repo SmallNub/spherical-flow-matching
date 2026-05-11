@@ -1,10 +1,11 @@
+import math
 import torch
 import torch.nn as nn
 from manifm.model.arch import ACTFNS
 import manifm.model.diffeq_layers as diffeq_layers
 
 
-NormLayer = nn.Identity
+NormLayer = nn.RMSNorm
 
 
 class FlowModelOverride(nn.Module):
@@ -18,6 +19,7 @@ class FlowModelOverride(nn.Module):
         actfn,
         fourier=None,
         dropout=0.3,
+        embed_dim=64,
         num_classes=None,
         null_chance=0.0,
     ):
@@ -32,99 +34,96 @@ class FlowModelOverride(nn.Module):
             in_dim,
             hidden_dim,
             actfn,
+            embed_dim=embed_dim,
             num_classes=num_classes,
             null_chance=null_chance,
         )
 
         layers = []
         for _ in range(num_layers - 2):
-            layers.append(LinearBlock(hidden_dim, hidden_dim, actfn, dropout=dropout))
+            layers.append(LinearBlock(hidden_dim, hidden_dim, actfn, embed_dim, dropout=dropout))
         self.core = nn.ModuleList(layers)
 
         self.head = Head(hidden_dim, in_dim)
 
     def forward(self, t, x, y=None):
-        x = self.stem(t, x, y=y)
+        x, y = self.stem(t, x, y=y)
 
         for layer in self.core:
-            x = layer(t, x)
+            x = layer(t, x, y)
 
         x = self.head(t, x)
         return x
 
 
-class ConditionalModel(nn.Module):
-    def __init__(self, num_classes, in_dim, embed_dim, out_dim, actfn, null_chance=0.0):
-        super().__init__()
-        self.null_chance = null_chance
-
-        self.embedding = nn.Embedding(num_classes + 1 if null_chance > 0 else num_classes, embed_dim)
-        self.linear = diffeq_layers.ConcatLinear_v2(embed_dim + in_dim, out_dim)
-        self.norm = NormLayer(out_dim)
-        self.actfn = actfn(out_dim)
-
-    def forward(self, t, x, y):
-        if self.null_chance > 0:
-            if torch.rand(1).item() < self.null_chance:
-                y = y * 0  # Label 0 is reserved for the null class
-            else:
-                y = y + 1  # Shift labels to account for null class
-
-        y = self.embedding(y)
-        x = torch.cat([x, y], dim=1)
-        x = self.linear(t, x)
-        x = self.norm(x)
-        x = self.actfn(t, x)
-        return x
-
-
 class LinearBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, actfn, dropout=0.1):
+    def __init__(self, in_dim, out_dim, actfn, cond_dim, dropout=0.1):
         super().__init__()
         self.norm = NormLayer(in_dim)
         self.linear = diffeq_layers.ConcatLinear_v2(in_dim, out_dim)
         self.actfn = actfn(out_dim)
+        self.film = FiLM(cond_dim, out_dim)
         self.dropout = nn.Dropout(dropout)
+        self.gate = nn.Linear(cond_dim, out_dim)
+        torch.nn.init.zeros_(self.gate.weight)
+        torch.nn.init.zeros_(self.gate.bias)
 
-    def forward(self, t, x):
+    def forward(self, t, x, y):
         residual = x
         x = self.norm(x)
         x = self.linear(t, x)
+        x = self.film(x, y)
         x = self.actfn(t, x)
         x = self.dropout(x)
-        x = x + residual
+        x = residual + self.gate(y).tanh() * x
         return x
 
 
 class Stem(nn.Module):
-    def __init__(self, in_dim, out_dim, actfn, num_classes=None, null_chance=0.0):
+    def __init__(self, in_dim, out_dim, actfn, embed_dim=64, num_classes=None, null_chance=0.0):
         super().__init__()
-        self.actfn = actfn(out_dim)
-        self.cond_model = None
+        if num_classes is None:
+            if null_chance > 0:
+                raise ValueError("Null chance > 0 is not compatible with num_classes=None")
+            num_classes = 1
 
-        if num_classes is not None and num_classes > 0:
-            self.cond_model = ConditionalModel(
-                num_classes,
-                in_dim,
-                in_dim,
-                out_dim,
-                actfn,
-                null_chance
-            )
+        self.null_chance = null_chance
 
-        self.linear = diffeq_layers.ConcatLinear_v2(out_dim if self.cond_model else in_dim, out_dim)
+        self.class_embed = nn.Embedding(num_classes + 1 if null_chance > 0 else num_classes, embed_dim)
+        self.class_mlp = EmbeddingMLP(embed_dim, embed_dim)
+
+        self.time_embed = SinusoidalTimeEmbedding(embed_dim)
+        self.time_mlp = EmbeddingMLP(embed_dim, embed_dim)
+
+        self.cond_mlp = EmbeddingMLP(embed_dim * 2, embed_dim)
+
+        self.concat_fc = diffeq_layers.ConcatLinear_v2(embed_dim + in_dim, out_dim)
         self.norm = NormLayer(out_dim)
+        self.actfn = actfn(out_dim)
 
-    def forward(self, t, x, y=None):
-        if self.cond_model:
-            if y is None:
-                raise ValueError("Conditional inputs are required.")
-            x = self.cond_model(t, x, y)
+    def forward(self, t, x, y):
+        if y is None:
+            y = torch.zeros((x.shape[0],), dtype=torch.long, device=x.device)
 
-        x = self.linear(t, x)
+        elif self.training and self.null_chance > 0:
+            mask = torch.rand_like(y.float()) < self.null_chance
+            y = y + 1
+            y[mask] = 0
+
+        y_emb = self.class_embed(y)
+        y_emb = self.class_mlp(y_emb)
+
+        t_emb = self.time_embed(t)
+        t_emb = self.time_mlp(t_emb)
+
+        cond_emb = torch.cat([t_emb, y_emb], dim=1)
+        cond_emb = self.cond_mlp(cond_emb)
+
+        x = torch.cat([x, cond_emb], dim=1)
+        x = self.concat_fc(t, x)
         x = self.norm(x)
         x = self.actfn(t, x)
-        return x
+        return x, cond_emb
 
 
 class Head(nn.Module):
@@ -137,3 +136,61 @@ class Head(nn.Module):
         x = self.norm(x)
         x = self.linear(t, x)
         return x
+
+
+class FiLM(nn.Module):
+    def __init__(self, cond_dim, hidden_dim):
+        super().__init__()
+        self.to_film = nn.Linear(cond_dim, 2 * hidden_dim)
+        torch.nn.init.normal_(self.to_film.weight, mean=0.0, std=0.5)
+        torch.nn.init.zeros_(self.to_film.bias)
+
+    def forward(self, x, cond):
+        gamma, beta = self.to_film(cond).chunk(2, dim=-1)
+        x = (1 + gamma) * x + beta
+        return x
+
+
+class EmbeddingMLP(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, out_dim)
+        self.fc2 = nn.Linear(out_dim, out_dim)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        x = self.act(self.fc1(x))
+        x = self.act(self.fc2(x))
+        return x
+
+
+class SinusoidalTimeEmbedding(nn.Module):
+    def __init__(self, dim, max_period=10000):
+        super().__init__()
+        self.dim = dim
+        half_dim = dim // 2
+
+        freqs = torch.exp(
+            -math.log(max_period)
+            * torch.arange(half_dim).float()
+            / (half_dim - 1)
+        )
+        self.register_buffer('freqs', freqs)
+
+    @torch.no_grad()
+    def forward(self, t):
+        t_vec = t.reshape(-1).float()
+
+        batch_size = t_vec.shape[0]
+        half_dim = self.dim // 2
+
+        emb = torch.empty((batch_size, self.dim), device=t.device, dtype=torch.float32)
+        angles = 2 * math.pi * torch.outer(t_vec, self.freqs)
+
+        torch.sin(angles, out=emb[:, :half_dim])
+        torch.cos(angles, out=emb[:, half_dim:2*half_dim])
+
+        if self.dim % 2 != 0:
+            emb[:, -1] = 0.0
+
+        return emb

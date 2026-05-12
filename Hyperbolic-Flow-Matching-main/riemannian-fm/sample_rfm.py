@@ -2,6 +2,7 @@ import tqdm
 import torch
 from manifm.model_pl import ManifoldFMLitModule
 from omegaconf import OmegaConf
+from preprocess_data import manifold_squeeze
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -10,15 +11,18 @@ RUNTIME_STATS = False
 
 N_SAMPLES = 10000
 NUM_CLASSES = 10
-STEPS = 10
-NOISE_STD = 0.1
+STEPS = 100
+NOISE_STD = 1.0
 START_T = 0.0
-BLEND_FACTOR = 1.0
+SQUEEZE = False
+SQUEEZE_ALPHA = 0.5
 
-MODE = "improve"  # Switch between "generate" or "improve"
+# TODO: Fully finish CFG, change to csv
+
+GENERATION = False
 INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.12/001239"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.12/150428"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -40,8 +44,8 @@ def dummy_labels(n_samples=50000):
 
 
 def normalize(z):
-    N, T, D = z.shape  # e.g. 256, 4
-    z = z.reshape(N, T * D)   # [N, 1024]
+    N, T, D = z.shape
+    z = z.reshape(N, T * D)
     z = z / z.norm(dim=-1, keepdim=True)
     return z
 
@@ -87,18 +91,27 @@ def integrate_flow(z_start, labels=None, steps=1000, start_t=0.0):
 
 
 @torch.no_grad()
-def improve_encodings(path_to_existing, noise_std=NOISE_STD, blend_factor=BLEND_FACTOR, start_t=START_T):
+def improve_encodings(
+    input_path,
+    noise_std=NOISE_STD,
+    start_t=START_T,
+    generation=False,
+    generation_samples=N_SAMPLES,
+):
     """Loads existing .pt file and pushes encodings through the flow."""
-    print(f"Loading existing encodings from {path_to_existing}")
-    data = torch.load(path_to_existing, map_location=DEVICE)
+    print(f"Loading existing encodings from {input_path}")
+    data = torch.load(input_path, map_location=DEVICE)
     z_input = data["encodings"].float()
-    labels = data.get("labels")
+    labels_input = data.get("labels")
     split_ids = data.get("split_ids")
     split_names = data.get("split_names")
+    class_means = data.get("class_means", None)
+
+    # labels = torch.full((z_noise.shape[0],), 1, dtype=torch.long).to(DEVICE)
 
     if CHECK_UNIFORMITY:
-        for label in labels.unique():
-            mask = labels == label
+        for label in labels_input.unique():
+            mask = labels_input == label
             z_label = z_input[mask]
             check_hypersphere_uniformity(z_label, text=f"Label {label}")
             z_label = normalize(z_label)
@@ -110,37 +123,46 @@ def improve_encodings(path_to_existing, noise_std=NOISE_STD, blend_factor=BLEND_
     z_input = normalize(z_input)
     z_input = manifold.projx(z_input)
 
+    if SQUEEZE:
+        z_input, _ = manifold_squeeze(z_input, labels_input, class_means=class_means, alpha=SQUEEZE_ALPHA, reverse=False)
+
     if CHECK_UNIFORMITY:
         check_uniformity(z_input)
 
-    # If labels are None but the decoder needs them, initialize zeros
-    if labels is None:
-        labels = dummy_labels(z_input.shape[0])
+    if generation:
+        labels = dummy_labels(generation_samples)
+    else:
+        labels = labels_input
 
-    print(f"Refining {z_input.shape[0]} samples...")
-    noise = torch.randn_like(z_input) * noise_std
-    z_noise = z_input + noise
-    z_noise = manifold.projx(z_noise)
-    z_improved = integrate_flow(z_noise, torch.full((z_noise.shape[0],), 1, dtype=torch.long).to(DEVICE), steps=STEPS, start_t=start_t)
-
-    z_final = (1 - blend_factor) * z_input + blend_factor * z_improved
-    z_final = manifold.projx(z_final)
-
-    z_init = manifold.random_base(len(z_input), z_input.shape[-1]).to(DEVICE)
+    z_init = manifold.random_base(generation_samples if generation else len(z_input), z_input.shape[-1]).to(DEVICE)
     z_init = manifold.projx(z_init)
 
+    if generation:
+        z_noise = z_init
+    else:
+        noise = torch.randn_like(z_input) * noise_std
+        z_noise = z_input + noise
+        z_noise = manifold.projx(z_noise)
+
+    print(f"Refining {z_noise.shape[0]} samples...")
+    z_final = integrate_flow(z_noise, labels, steps=STEPS, start_t=start_t)
+
     print("Clustering report:")
-    check_class_clustering(z_input, labels, text="Original Class Clustering")
+    check_class_clustering(z_input, labels_input, text="Original Class Clustering")
     check_class_clustering(z_noise, labels, text="Noise Class Clustering")
     check_class_clustering(z_final, labels, text="Final Class Clustering")
 
-    print("Manifold distance stats:")
-    measure_manifold_distance(z_init, z_input, text="Full Noise vs Original")
-    measure_manifold_distance(z_noise, z_input, text="Noise vs Original")
-    measure_manifold_distance(z_noise, z_final, text="Noise vs Improved")
-    measure_manifold_distance(z_final, z_input, text="Improved vs Original")
+    if not generation:
+        print("Manifold distance stats:")
+        measure_manifold_distance(z_init, z_input, text="Full Noise vs Original")
+        measure_manifold_distance(z_noise, z_input, text="Noise vs Original")
+        measure_manifold_distance(z_noise, z_final, text="Noise vs Improved")
+        measure_manifold_distance(z_final, z_input, text="Improved vs Original")
 
-    return z_improved, labels, split_ids, split_names
+    if SQUEEZE:
+        z_final, _ = manifold_squeeze(z_final, labels, class_means=class_means, alpha=SQUEEZE_ALPHA, reverse=True)
+
+    return z_final, labels, split_ids, split_names
 
 
 @torch.no_grad()
@@ -294,11 +316,8 @@ def check_class_clustering(z, labels, text="Class Clustering"):
     return all_stats
 
 
-if MODE == "generate":
-    z_init = manifold.random_base(N_SAMPLES, dim).to(DEVICE)
-    z_init = manifold.projx(z_init)
-    labels = dummy_labels(N_SAMPLES)
-    z_final = integrate_flow(z_init, labels, steps=STEPS, start_t=START_T)
+if GENERATION:
+    z_final, labels, *_ = improve_encodings(INPUT_PATH, generation=True, generation_samples=N_SAMPLES)
     split_ids = torch.zeros(N_SAMPLES, dtype=torch.long)
     split_names = ["generated"]
 else:
@@ -308,8 +327,8 @@ z_final = unnormalize(z_final.cpu())
 
 # torch.save({
 #     "encodings": z_final,
-#     "labels": labels,
-#     "split_ids": split_ids,
+#     "labels": labels.cpu(),
+#     "split_ids": split_ids.cpu(),
 #     "split_names": split_names,
 # }, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.pt")
 

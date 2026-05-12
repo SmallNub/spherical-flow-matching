@@ -116,7 +116,7 @@ def train_flow(model, loss_fn, trainloader, valloader, num_epoch, lr, p0_distrib
         val_epoch_loss = val_total_loss / len(valloader)
         ###################
 
-        wandb.log({"loss": epoch_loss})
+        wandb.log({"loss": epoch_loss, "val_loss": val_epoch_loss})
 
         if total_loss < best_loss:
             best_loss = total_loss
@@ -313,13 +313,21 @@ def main():
         # GENERATE SAMPLES
         print("Saving generated samples...")
 
-        z_final = x1_gen
-        labels = torch.zeros(num_samples, dtype=torch.long)
+        z_final = x1_gen.cpu()
+        N = z_final.shape[0]
+        z = z_final.reshape(N, 256, 4)
+        z = z / z.norm(dim=[1, 2], keepdim=True)
+        z = z * torch.sqrt(torch.tensor(1024))
+        labels = []
+        for i in range(10):
+            class_i = torch.full((N // 10,), i, dtype=torch.long)
+            labels.append(class_i)
+        labels = torch.cat(labels, dim=0)
         split_ids = torch.zeros(num_samples, dtype=torch.long)
         split_names = ["generated"]
 
         torch.save({
-            "encodings": z_final,
+            "encodings": z,
             "labels": labels,
             "split_ids": split_ids,
             "split_names": split_names,

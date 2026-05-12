@@ -16,30 +16,30 @@ class VectorDynamics(nn.Module):
         self.time_dim = time_dim
         self.hidden_dim = hidden_dim
 
-        self.input_layer = nn.Linear(time_dim + input_dim, 64)
+        # self.input_layer = nn.Linear(time_dim + input_dim, 64)
+
+        # self.net = nn.Sequential(
+        #     nn.SELU(),
+        #     nn.Linear(64, hidden_dim),
+        #     nn.SELU(),
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.SELU(),
+        #     nn.Linear(hidden_dim, 64),
+        #     nn.SELU(),
+        #     nn.Linear(64, input_dim),
+        # )
+
+        self.input_layer = nn.Linear(time_dim + input_dim, input_dim)
 
         self.net = nn.Sequential(
             nn.SELU(),
-            nn.Linear(64, hidden_dim),
+            nn.Linear(input_dim, input_dim),
             nn.SELU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(input_dim, input_dim),
             nn.SELU(),
-            nn.Linear(hidden_dim, 64),
+            nn.Linear(input_dim, input_dim),
             nn.SELU(),
-            nn.Linear(64, input_dim),
-        )
-
-        self.input_layer = nn.Linear(time_dim + input_dim, 2*input_dim)
-
-        self.net = nn.Sequential(
-            nn.SELU(),
-            nn.Linear(2*input_dim, 4*input_dim),
-            nn.SELU(),
-            nn.Linear(4*input_dim, 4*input_dim),
-            nn.SELU(),
-            nn.Linear(4*input_dim, 2*input_dim),
-            nn.SELU(),
-            nn.Linear(2*input_dim, input_dim),
+            nn.Linear(input_dim, input_dim),
         )
     
     def forward(self, t, x): # always (t, x) to be used with odeint

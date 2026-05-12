@@ -1,0 +1,146 @@
+import torch
+from manifm.manifolds import Sphere
+
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
+OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/processed_dataset.pt"
+
+STD_DEVS = 2.0
+SQUEEZE_DATA = False
+SQUEEZE_ALPHA = 0.5
+
+manifold = Sphere()
+
+
+def normalize(z):
+    N, T, D = z.shape
+    z = z.reshape(N, T * D)
+    z = z / z.norm(dim=-1, keepdim=True)
+    return z
+
+
+@torch.no_grad()
+def manifold_squeeze(z, labels, class_means=None, alpha=0.2, reverse=False):
+    """
+    Squeezes or expands points along the geodesic toward/away from class centroids.
+    alpha: 0.0 to 1.0.
+           0.2 means points move 20% closer to the mean.
+    reverse: If True, moves points AWAY from the mean to restore variance.
+    """
+    z_out = z.clone()
+    unique_labels = torch.unique(labels)
+
+    if class_means is None:
+        class_means = {label.item(): None for label in unique_labels}
+
+    # Scaling factor logic
+    # If alpha=0.2, we multiply distance by 0.8 to squeeze.
+    # To reverse, we divide by 0.8 (multiply by 1.25) to expand.
+    scale = (1.0 - alpha)
+    if reverse:
+        scale = 1.0 / scale
+
+    for label in unique_labels:
+        mask = (labels == label)
+        z_class = z[mask]
+        if z_class.shape[0] == 0:
+            continue
+
+        # 1. Get the class centroid (projected Euclidean mean)
+        if class_means[label.item()] is not None:
+            centroid = class_means[label.item()]
+        else:
+            centroid = z_class.mean(dim=0, keepdim=True)
+            centroid = centroid / centroid.norm()  # Project to unit sphere
+            class_means[label.item()] = centroid
+
+        # 2. Lift points to the tangent space of the centroid
+        # logmap returns vectors in the 'flat' space centered at the mean
+        tangent_v = manifold.logmap(centroid.expand_as(z_class), z_class)
+
+        # 3. Apply proportional scaling
+        # Points farther away have larger tangent_v norms and move more.
+        scaled_v = tangent_v * scale
+
+        # 4. Project back down to the sphere surface
+        z_out[mask] = manifold.expmap(centroid.expand_as(z_class), scaled_v)
+
+    return manifold.projx(z_out), class_means
+
+
+@torch.no_grad()
+def remove_manifold_outliers(z, labels, std_devs=2.0):
+    z = z.to(DEVICE)
+    labels = labels.to(DEVICE)
+
+    final_selection = torch.zeros_like(labels, dtype=bool)
+    unique_labels = torch.unique(labels)
+
+    for label in unique_labels:
+        class_indices = (labels == label)
+        z_class = z[class_indices]
+
+        centroid = z_class.mean(dim=0, keepdim=True)
+        centroid = centroid / centroid.norm(dim=-1, keepdim=True)
+
+        distances = manifold.dist(z_class, centroid.expand_as(z_class))
+
+        m = distances.mean()
+        s = distances.std()
+        threshold = m + (std_devs * s)
+
+        mask = torch.zeros_like(class_indices, dtype=bool)
+        mask[class_indices == 1] = distances <= threshold
+
+        final_selection |= mask
+
+        print(f"Label {label.item()}: Mean Dist {m:.4f}, Threshold {threshold:.4f}. "
+              f"Keeping {len(mask.nonzero())}/{len(z_class)}")
+
+    return z[final_selection], labels[final_selection]
+
+
+def main():
+    data = torch.load(INPUT_PATH, map_location=DEVICE)
+    z_input = data["encodings"].float()
+    labels = data.get("labels")
+    split_ids = data.get("split_ids")
+    split_names = data.get("split_names")
+
+    z_input = normalize(z_input)
+
+    splits = {split_name: None for split_name in split_names}
+    for split_id, split_name in zip(split_ids.unique(), split_names):
+        mask = split_ids == split_id
+        splits[split_name] = {"encodings": z_input[mask], "labels": labels[mask], "split_ids": split_ids[mask]}
+
+    class_means = None
+    train = splits.pop("train")
+    if SQUEEZE_DATA:
+        z_train, train_labels = remove_manifold_outliers(train["encodings"], train["labels"], std_devs=STD_DEVS)
+        z_train, class_means = manifold_squeeze(z_train, train_labels, alpha=SQUEEZE_ALPHA, reverse=False)
+        for split_name, split in splits.items():
+            if split_name == "train":
+                continue
+
+            z_split, _ = manifold_squeeze(split["encodings"], split["labels"], alpha=SQUEEZE_ALPHA, reverse=False)
+            splits[split_name]["encodings"] = z_split
+    else:
+        z_train, train_labels = train["encodings"], train["labels"]
+
+    z_all = torch.cat([z_train] + [splits[split_name]["encodings"] for split_name in splits], dim=0)
+    labels_all = torch.cat([train_labels] + [splits[split_name]["labels"] for split_name in splits], dim=0)
+    split_ids_all = torch.cat([torch.zeros_like(train_labels)] + [splits[split_name]["split_ids"] for split_name in splits], dim=0)
+
+    torch.save({
+        "encodings": z_all.cpu(),
+        "labels": labels_all.cpu(),
+        "split_ids": split_ids_all.cpu(),
+        "split_names": split_names,
+        "class_means": class_means,
+    }, OUTPUT_PATH)
+
+
+if __name__ == "__main__":
+    main()

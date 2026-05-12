@@ -28,6 +28,12 @@ class SphereEncodingDataset(Dataset):
         self.data = data["encodings"].float()
         self.labels = data["labels"].long()
 
+        split_ids = data["split_ids"]
+        train_mask = split_ids == 0
+
+        self.data = self.data[train_mask].clone()
+        self.labels = self.labels[train_mask].clone()
+
         self.manifold = Sphere()
         self.dim = self.data.shape[1]
 

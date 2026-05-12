@@ -10,13 +10,14 @@ from cli_utils import str2bool
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch_fidelity
 from tqdm import tqdm
+import PIL as pil
 
 from sphere.model import G
 from sphere.ema import SimpleEMA
-from sphere.utils import load_ckpt, save_image
+from sphere.utils import load_ckpt
+from sphere.loader import resize_arr
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--output_dir", type=str, default="decoded_eval")
 parser.add_argument("--dataset_name", type=str, default="cifar-10")
 
-parser.add_argument("--batch_size", type=int, default=256)
+parser.add_argument("--batch_size", type=int, default=128)
 parser.add_argument("--use_ema", type=bool, default=True)
 parser.add_argument("--compile_model", type=str2bool, default=True)
 
@@ -60,16 +61,18 @@ def set_seed(seed, deterministic=False):
         torch.backends.cudnn.benchmark = False
 
 
-# -------------------------------------------------
-# LOAD ENCODINGS
-# -------------------------------------------------
 def load_data(path):
-    data = torch.load(path, map_location="cpu", weights_only=False)
+    data = np.load(path, allow_pickle=False)
+
+    z_input = torch.from_numpy(data["encodings"]).float()
+    labels = torch.from_numpy(data["labels"]).long()
+    split_ids = torch.from_numpy(data["split_ids"]).long()
+    split_names = data["split_names"].tolist()
     return (
-        data["encodings"],
-        data.get("labels"),
-        data.get("split_ids"),
-        data.get("split_names", None),
+        z_input,
+        labels,
+        split_ids,
+        split_names,
     )
 
 
@@ -85,16 +88,29 @@ def find_checkpoint(path):
         raise FileNotFoundError(path)
 
 
-# -------------------------------------------------
-# SPLIT UTILS
-# -------------------------------------------------
 def get_split_indices(split_ids, target_id):
     return (split_ids == target_id).nonzero(as_tuple=True)[0]
 
 
-# -------------------------------------------------
-# DECODE LOOP
-# -------------------------------------------------
+@torch.inference_mode()
+def save_image(x, y, batch_idx, save_dir, force_image_size=-1):
+    assert isinstance(x, torch.Tensor)
+    x = x * 255.0
+    x = torch.floor(x).to(torch.uint8)
+    x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
+    x = x.cpu().numpy()
+
+    for i, (img, label) in enumerate(zip(x, y)):
+        image_name = f"label={label}_ord={batch_idx:05d}_idx={i:05d}.png"
+        image_path = os.path.join(save_dir, image_name)
+        image = pil.Image.fromarray(img)
+
+        if force_image_size > 0:
+            image = resize_arr(image, image_size=force_image_size)
+
+        image.save(image_path, format="PNG", compress_level=0)
+
+
 def decode_from_latents(model, z, y=None):
     x = model.decoder(z, y)
     x = torch.clamp(x * 0.5 + 0.5, 0, 1)
@@ -103,7 +119,6 @@ def decode_from_latents(model, z, y=None):
 
 @torch.inference_mode()
 def decode_and_save(model, z, y, save_dir, args, ptdtype, device):
-
     if osp.exists(save_dir):
         shutil.rmtree(save_dir)
     os.makedirs(save_dir, exist_ok=True)
@@ -113,11 +128,10 @@ def decode_and_save(model, z, y, save_dir, args, ptdtype, device):
 
     logger.info(f"Decoding {num_samples} samples → {save_dir}")
 
-    cnt = 0
+    count = 0
     pbar = tqdm(range(num_batches))
 
     for batch_idx in pbar:
-
         start = batch_idx * args.batch_size
         end = min(start + args.batch_size, num_samples)
 
@@ -125,21 +139,20 @@ def decode_and_save(model, z, y, save_dir, args, ptdtype, device):
 
         y_batch = y[start:end].to(device) if y is not None else None
 
-        # IMPORTANT: normalize latents (sphere models NEED this)
         if args.normalize_latents:
             z_batch = model.spherify(z_batch)
 
         with torch.autocast(device_type="cuda", dtype=ptdtype):
             x_rec = decode_from_latents(model, z_batch, y_batch)
 
-        cnt += x_rec.shape[0]
-        pbar.set_description(f"decoded {cnt}/{num_samples}")
+        count += x_rec.shape[0]
+        pbar.set_description(f"Decoded {count}/{num_samples}")
 
         if args.save_images:
             save_image(
                 x=x_rec,
+                y=y_batch,
                 batch_idx=batch_idx,
-                ddp_rank=0,
                 save_dir=save_dir,
                 force_image_size=args.image_size,
             )
@@ -149,16 +162,11 @@ def decode_and_save(model, z, y, save_dir, args, ptdtype, device):
     logger.info("Decoding finished")
 
 
-# -------------------------------------------------
-# METRICS
-# -------------------------------------------------
 def run_metrics(img_dir, args, split_name):
-
     logger.info(f"Running metrics for split: {split_name}")
 
     input2 = None
 
-    # match eval.py behavior
     if args.dataset_name == "cifar-10":
         input2 = "cifar10-train"
 
@@ -169,24 +177,18 @@ def run_metrics(img_dir, args, split_name):
         batch_size=args.batch_size,
         isc=True,  # Inception Score
         fid=True,  # Frechet Inception Distance
-        kid=True,  # Kernel Inception Distance
-        prc=True,  # Precision and Recall
+        kid=False,  # Kernel Inception Distance, very slow
+        prc=False,  # Precision and Recall, slow
         ppl=False,  # Perceptual Path Length, requires generator
         verbose=True,
     )
 
     logger.info(f"[{split_name}] {metrics}")
+    return metrics
 
 
-# -------------------------------------------------
-# MAIN
-# -------------------------------------------------
 @torch.inference_mode()
 def main(cli_args):
-
-    # -------------------------------------------------
-    # LOAD CONFIG (same as eval/encode)
-    # -------------------------------------------------
     exp_dir = osp.dirname(cli_args.checkpoint)
     cfg_path = osp.join(exp_dir, "cfg.json")
 
@@ -197,10 +199,9 @@ def main(cli_args):
     cfg_args.update(vars(cli_args))
     args = SimpleNamespace(**cfg_args)
 
-    # -------------------------------------------------
-    # DEVICE / DTYPE
-    # -------------------------------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    set_seed(args.seed, args.deterministic)
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -211,16 +212,10 @@ def main(cli_args):
         "float16": torch.float16,
     }[args.dtype]
 
-    # -------------------------------------------------
-    # LOAD ENCODINGS
-    # -------------------------------------------------
     z, y, split_ids, split_names = load_data(args.encoding_path)
 
     logger.info(f"Encodings: {z.shape}, dtype={z.dtype}")
 
-    # -------------------------------------------------
-    # MODEL
-    # -------------------------------------------------
     model = G(
         input_size=args.image_size,
         patch_size=args.patch_size,
@@ -259,9 +254,6 @@ def main(cli_args):
 
     model.eval().requires_grad_(False)
 
-    # -------------------------------------------------
-    # SPLIT HANDLING
-    # -------------------------------------------------
     splits_to_eval = []
 
     if split_ids is not None and split_names is not None:
@@ -270,13 +262,9 @@ def main(cli_args):
     else:
         splits_to_eval.append((None, "all"))
 
-    # -------------------------------------------------
-    # RUN PER SPLIT
-    # -------------------------------------------------
-    for split_id, split_name in splits_to_eval:
-        # if split_name != "test":
-        #     continue  # ONLY EVAL TEST SPLIT FOR NOW
+    metrics = {}
 
+    for split_id, split_name in splits_to_eval:
         logger.info(f"\n==== Evaluating split: {split_name} ====")
 
         if split_id is not None:
@@ -298,9 +286,17 @@ def main(cli_args):
             device,
         )
 
-        run_metrics(split_dir, args, split_name)
+        metrics[split_name] = run_metrics(split_dir, args, split_name)
+
+    logger.info("===== Evaluation Metrics =====")
+
+    for split_name, split_metrics in metrics.items():
+        logger.info("---- %s ----", split_name)
+        for k, v in split_metrics.items():
+            logger.info("%-20s : %s", k, v)
+
+    logger.info("==============================")
 
 
-# -------------------------------------------------
 if __name__ == "__main__":
     main(cli_args)

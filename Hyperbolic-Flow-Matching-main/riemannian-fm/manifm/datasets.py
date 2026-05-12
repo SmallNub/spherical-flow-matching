@@ -24,11 +24,11 @@ def load_csv(filename):
 
 class SphereEncodingDataset(Dataset):
     def __init__(self, data_path):
-        data = torch.load(data_path)
-        self.data = data["encodings"].float()
-        self.labels = data["labels"].long()
+        data = np.load(data_path, allow_pickle=False)
+        self.data = torch.from_numpy(data["encodings"]).float()
+        self.labels = torch.from_numpy(data["labels"]).long()
 
-        split_ids = data["split_ids"]
+        split_ids = torch.from_numpy(data["split_ids"]).long()
         train_mask = split_ids == 0
 
         self.data = self.data[train_mask].clone()

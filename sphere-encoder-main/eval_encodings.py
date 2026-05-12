@@ -33,7 +33,7 @@ parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--output_dir", type=str, default="decoded_eval")
 parser.add_argument("--dataset_name", type=str, default="cifar-10")
 
-parser.add_argument("--batch_size", type=int, default=128)
+parser.add_argument("--batch_size", type=int, default=256)
 parser.add_argument("--use_ema", type=bool, default=True)
 parser.add_argument("--compile_model", type=str2bool, default=True)
 
@@ -166,10 +166,12 @@ def run_metrics(img_dir, args, split_name):
         input1=img_dir,
         input2=input2,
         cuda=torch.cuda.is_available(),
-        isc=True,
-        fid=True,
-        kid=False,
-        prc=False,
+        batch_size=args.batch_size,
+        isc=True,  # Inception Score
+        fid=True,  # Frechet Inception Distance
+        kid=True,  # Kernel Inception Distance
+        prc=True,  # Precision and Recall
+        ppl=False,  # Perceptual Path Length, requires generator
         verbose=True,
     )
 

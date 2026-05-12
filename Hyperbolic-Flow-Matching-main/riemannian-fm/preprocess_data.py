@@ -1,14 +1,15 @@
+import numpy as np
 import torch
 from manifm.manifolds import Sphere
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
-OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/processed_dataset.pt"
+INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.npz"
+OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/processed_dataset.npz"
 
 STD_DEVS = 2.0
-SQUEEZE_DATA = False
-SQUEEZE_ALPHA = 0.5
+SQUEEZE_DATA = True
+SQUEEZE_ALPHA = 0.2
 
 manifold = Sphere()
 
@@ -102,11 +103,14 @@ def remove_manifold_outliers(z, labels, std_devs=2.0):
 
 
 def main():
-    data = torch.load(INPUT_PATH, map_location=DEVICE)
-    z_input = data["encodings"].float()
-    labels = data.get("labels")
-    split_ids = data.get("split_ids")
-    split_names = data.get("split_names")
+    data = np.load(INPUT_PATH, allow_pickle=False)
+
+    z_input = torch.from_numpy(data["encodings"]).float()
+    labels = torch.from_numpy(data["labels"]).long()
+    split_ids = torch.from_numpy(data["split_ids"]).long()
+    split_names = data["split_names"].tolist()
+
+    print("Processing...")
 
     z_input = normalize(z_input)
 
@@ -133,13 +137,24 @@ def main():
     labels_all = torch.cat([train_labels] + [splits[split_name]["labels"] for split_name in splits], dim=0)
     split_ids_all = torch.cat([torch.zeros_like(train_labels)] + [splits[split_name]["split_ids"] for split_name in splits], dim=0)
 
-    torch.save({
-        "encodings": z_all.cpu(),
-        "labels": labels_all.cpu(),
-        "split_ids": split_ids_all.cpu(),
-        "split_names": split_names,
-        "class_means": class_means,
-    }, OUTPUT_PATH)
+    print("Saving...")
+
+    output = dict(
+        encodings=z_all.cpu().numpy(),
+        labels=labels_all.cpu().numpy(),
+        split_ids=split_ids_all.cpu().numpy(),
+        split_names=np.array(split_names, dtype=str),
+    )
+
+    if class_means is not None:
+        output["class_means"] = class_means.cpu().numpy()
+
+    np.savez_compressed(
+        OUTPUT_PATH,
+        allow_pickle=False,
+        **output,
+    )
+    print("Processed dataset saved to:", OUTPUT_PATH)
 
 
 if __name__ == "__main__":

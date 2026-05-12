@@ -1,5 +1,6 @@
 import tqdm
 import torch
+import numpy as np
 from manifm.model_pl import ManifoldFMLitModule
 from omegaconf import OmegaConf
 from preprocess_data import manifold_squeeze
@@ -14,15 +15,16 @@ NUM_CLASSES = 10
 STEPS = 100
 NOISE_STD = 1.0
 START_T = 0.0
-SQUEEZE = False
-SQUEEZE_ALPHA = 0.5
+GUIDANCE_SCALE = 3.0
 
-# TODO: Fully finish CFG, change to csv
+SQUEEZE = True
+SQUEEZE_ALPHA = 0.2
 
-GENERATION = False
-INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.pt"
+GENERATION = True
+INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.npz"
+OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.npz"
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.12/150428"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.12/214840"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -64,20 +66,35 @@ def get_v(t_val, x, y=None):
 
 
 @torch.no_grad()
-def integrate_flow(z_start, labels=None, steps=1000, start_t=0.0):
+def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDANCE_SCALE, null_label=0):
     """Generic Euler integrator for the manifold flow."""
-    if labels is not None:
-        labels = labels.to(DEVICE)
+    labels = labels.to(DEVICE)
+    null_labels = torch.full_like(labels, null_label)
 
     z_prev = z_start.clone().to(DEVICE)
     dt = (1.0 - start_t) / steps
 
     for i in tqdm.tqdm(range(steps), desc="Integrating flow"):
         current_t = start_t + dt * i
-        v = get_v(current_t, z_prev, y=labels)
-        u = dt * v
+
+        if guidance_scale != 1.0:
+            z_in = torch.cat([z_prev, z_prev], dim=0)
+
+            y_in = torch.cat([
+                null_labels,
+                labels
+            ], dim=0)
+
+            v_all = get_v(current_t, z_in, y=y_in)
+
+            v_uncond, v_cond = v_all.chunk(2, dim=0)
+
+            v = v_uncond + guidance_scale * (v_cond - v_uncond)
+        else:
+            v = get_v(current_t, z_prev, y=labels)
 
         # Euler Step + Manifold Projection
+        u = dt * v
         z = manifold.expmap(z_prev, u)
         z = manifold.projx(z)
 
@@ -100,11 +117,11 @@ def improve_encodings(
 ):
     """Loads existing .pt file and pushes encodings through the flow."""
     print(f"Loading existing encodings from {input_path}")
-    data = torch.load(input_path, map_location=DEVICE)
-    z_input = data["encodings"].float()
-    labels_input = data.get("labels")
-    split_ids = data.get("split_ids")
-    split_names = data.get("split_names")
+    data = np.load(input_path, allow_pickle=False)
+    z_input = torch.from_numpy(data["encodings"]).float()
+    labels_input = torch.from_numpy(data["labels"]).long()
+    split_ids = torch.from_numpy(data["split_ids"]).long()
+    split_names = data["split_names"].tolist()
     class_means = data.get("class_means", None)
 
     # labels = torch.full((z_noise.shape[0],), 1, dtype=torch.long).to(DEVICE)
@@ -325,11 +342,13 @@ else:
 
 z_final = unnormalize(z_final.cpu())
 
-# torch.save({
-#     "encodings": z_final,
-#     "labels": labels.cpu(),
-#     "split_ids": split_ids.cpu(),
-#     "split_names": split_names,
-# }, "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.pt")
+np.savez_compressed(
+    OUTPUT_PATH,
+    allow_pickle=False,
+    encodings=z_final.cpu().numpy(),
+    labels=labels.cpu().numpy(),
+    split_ids=split_ids.cpu().numpy(),
+    split_names=np.array(split_names, dtype=str),
+)
 
 print(f"Done. Saved shape: {z_final.shape}")

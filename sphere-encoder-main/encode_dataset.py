@@ -29,7 +29,7 @@ parser = argparse.ArgumentParser(description="Encode dataset")
 parser.add_argument("--data_path", type=str, required=True)
 parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--output_path", type=str, default=None)
-parser.add_argument("--output_name", type=str, default="encoded_dataset.pt")
+parser.add_argument("--output_name", type=str, default="encoded_dataset.npz")
 
 parser.add_argument("--batch_size", type=int, default=128)
 parser.add_argument("--num_workers", type=int, default=8)
@@ -273,7 +273,14 @@ def main(cli_args):
         "split_names": [s[0] for s in splits],
     }
 
-    torch.save(output, output_file)
+    np.savez_compressed(
+        output_file,
+        allow_pickle=False,
+        encodings=output["encodings"].cpu().float().numpy(),
+        labels=output["labels"].cpu().numpy(),
+        split_ids=output["split_ids"].cpu().numpy(),
+        split_names=np.array(output["split_names"], dtype=str),
+    )
 
     logger.info(f"Saved to {output_file}")
     logger.info(f"Encodings shape: {encodings.shape}")

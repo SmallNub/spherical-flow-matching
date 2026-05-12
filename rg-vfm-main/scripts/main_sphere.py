@@ -53,6 +53,8 @@ def parse_args():
     parser.add_argument("--wandb", action='store_true', default=False, help="Log to wandb")
     # data (custom)
     parser.add_argument("--data_path", type=str, default="")
+    # create samples (custom)
+    parser.add_argument('--sample', action='store_true', default=False, help="Save generated samples")
     return parser.parse_args()
 
 
@@ -73,7 +75,7 @@ def initialize_p0(p0_distribution, support, num_samples, data_dim):
 
     return x0
 
-def train_flow(model, loss_fn, trainloader, num_epoch, lr, p0_distribution, support):
+def train_flow(model, loss_fn, trainloader, valloader, num_epoch, lr, p0_distribution, support):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     best_model = None
     best_loss = float('inf')
@@ -96,6 +98,24 @@ def train_flow(model, loss_fn, trainloader, num_epoch, lr, p0_distribution, supp
             total_loss += loss.item()
 
         epoch_loss = total_loss/len(trainloader)
+
+
+        ## Validation loss
+        model.eval()
+        val_total_loss = 0.0
+
+        with torch.no_grad():
+            for x1 in valloader:
+                x1 = x1.view(x1.shape[0], -1).to(device)
+                t = torch.rand(x1.shape[0], 1, device=device)
+                x0 = initialize_p0(p0_distribution, support, x1.shape[0], x1.shape[-1]).to(device)
+
+                val_loss = loss_fn(model, x0, x1, t)
+                val_total_loss += val_loss.item()
+
+        val_epoch_loss = val_total_loss / len(valloader)
+        ###################
+
         wandb.log({"loss": epoch_loss})
 
         if total_loss < best_loss:
@@ -186,6 +206,7 @@ def main():
     wand_active = opts.wandb
     ## custom
     data_path = opts.data_path
+    sample = opts.sample
 
     # create folder and save config
     if geometry == "euclidean": support = "extrinsic"
@@ -216,13 +237,14 @@ def main():
         dataset = EmbeddingDataset(data_path)
 
     val_idx = dataset.splits.bool()
-    train_idx = ~ val_idx
+    train_idx = (~val_idx).nonzero(as_tuple=True)[0]
+    val_idx = val_idx.nonzero(as_tuple=True)[0]
     
     train_dataset = torch.utils.data.Subset(dataset, train_idx)
     val_dataset = torch.utils.data.Subset(dataset, val_idx)
 
     trainloader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    valloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+    valloader = data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 
 
@@ -236,7 +258,7 @@ def main():
     # Train the flow model
     if train == True:
         training_start_time = time.time()
-        model = train_flow(model, loss_fn, trainloader, num_epoch, lr, p0_distribution, support)
+        model = train_flow(model, loss_fn, trainloader, valloader, num_epoch, lr, p0_distribution, support)
         training_time = time.time() - training_start_time
         save_model(model, folder)
         print(f"Saved model to {folder}")
@@ -252,31 +274,61 @@ def main():
 
 
 
+    ## SAMPLING CALCULATIONS
+    if sample:
+        # Determine the appropriate support based on geometry and support settings
+        if geometry == "riemannian" and support == "intrinsic":
+            solver_support = "intrinsic"
+            manifold = SphereManifold()
+        else:
+            solver_support = "extrinsic"
+            manifold = SphereManifold()  # Still pass manifold for consistency
 
-    # compute probability paths from t=0 to t=1
-    x0 = initialize_p0(p0_distribution, support, 10, data_dim) # 2500 points to plot the density
-    t_span = torch.linspace(0.0, 0.99, steps=101)  # Uniform time grid
-    times_to_show = [0.00, 0.25, 0.5, 0.75, 0.99] # t=0 (uniform) to t=1 (checkerboard)
 
-    print("Computing probability paths...")
-    
-    # Determine the appropriate support based on geometry and support settings
-    if geometry == "riemannian" and support == "intrinsic":
-        solver_support = "intrinsic"
-        manifold = SphereManifold()
-    else:
-        solver_support = "extrinsic"
-        manifold = SphereManifold()  # Still pass manifold for consistency
-    
-    # Time the generation process
-    generation_start_time = time.time()
-    solver = ODESolver(velocity_model=velocity, manifold=manifold)
-    sols = solver.sample(x0=x0.to(device), t_span=t_span, support=solver_support)
-    x1_gen = sols[-1]
-    generation_time = time.time() - generation_start_time
+        # compute probability paths from t=0 to t=1
+        x0 = initialize_p0(p0_distribution, support, num_samples, data_dim)
+        t_span = torch.linspace(0.0, 0.99, steps=101)  # Uniform time grid
+        times_to_show = [0.00, 0.25, 0.5, 0.75, 0.99] # t=0 (uniform) to t=1 (checkerboard)
 
-    print(x0.norm(dim=-1))
-    print(x1_gen.norm(dim=-1))
+        print(f"Computing probability paths of {num_samples} samples...")
+
+
+        # Time the generation process
+        generation_start_time = time.time()
+        solver = ODESolver(velocity_model=velocity, manifold=manifold)
+
+        all_x1 = []
+        with torch.no_grad():
+            for i in range(0, num_samples, batch_size):
+                x0_batch = x0[i:i+batch_size].to(device)
+
+                sols = solver.sample(x0=x0_batch, t_span=t_span, support=solver_support)
+
+                all_x1.append(sols[-1].detach().cpu())
+                print(f"Batch {i}/{num_samples} processed!")
+
+        x1_gen = torch.cat(all_x1, dim=0)
+        generation_time = time.time() - generation_start_time
+        
+        # GENERATE SAMPLES
+        print("Saving generated samples...")
+
+        z_final = x1_gen
+        labels = torch.zeros(num_samples, dtype=torch.long)
+        split_ids = torch.zeros(num_samples, dtype=torch.long)
+        split_names = ["generated"]
+
+        torch.save({
+            "encodings": z_final,
+            "labels": labels,
+            "split_ids": split_ids,
+            "split_names": split_names,
+        }, "../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.pt")
+
+
+
+    # print(x0.norm(dim=-1))
+    # print(x1_gen.norm(dim=-1))
 
     # x1 = trainloader.dataset[:10000]
     # x1_flat = SphereManifold().unwrap(x1)

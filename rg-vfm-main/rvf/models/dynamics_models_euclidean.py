@@ -28,6 +28,19 @@ class VectorDynamics(nn.Module):
             nn.SELU(),
             nn.Linear(64, input_dim),
         )
+
+        self.input_layer = nn.Linear(time_dim + input_dim, 2*input_dim)
+
+        self.net = nn.Sequential(
+            nn.SELU(),
+            nn.Linear(2*input_dim, 4*input_dim),
+            nn.SELU(),
+            nn.Linear(4*input_dim, 4*input_dim),
+            nn.SELU(),
+            nn.Linear(4*input_dim, 2*input_dim),
+            nn.SELU(),
+            nn.Linear(2*input_dim, input_dim),
+        )
     
     def forward(self, t, x): # always (t, x) to be used with odeint
         """

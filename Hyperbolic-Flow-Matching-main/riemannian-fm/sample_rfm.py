@@ -24,7 +24,7 @@ GENERATION = True
 INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.npz"
 OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.npz"
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.13/141325"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.13/230210"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -66,7 +66,7 @@ def get_v(t_val, x, y=None):
 
 
 @torch.inference_mode()
-def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDANCE_SCALE, null_label=0):
+def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDANCE_SCALE, null_label=-1):
     """Generic Euler integrator for the manifold flow."""
     labels = labels.to(DEVICE)
     null_labels = torch.full_like(labels, null_label)
@@ -79,29 +79,29 @@ def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDA
 
         if guidance_scale != 1.0:
             z_in = torch.cat([z_prev, z_prev], dim=0)
-
-            y_in = torch.cat([
-                null_labels,
-                labels
-            ], dim=0)
+            y_in = torch.cat([null_labels, labels], dim=0)
 
             v_all = get_v(current_t, z_in, y=y_in)
-
             v_uncond, v_cond = v_all.chunk(2, dim=0)
 
             v = v_uncond + guidance_scale * (v_cond - v_uncond)
         else:
             v = get_v(current_t, z_prev, y=labels)
 
-        # Euler Step + Manifold Projection
         u = dt * v
-        z = manifold.expmap(z_prev, u)
-        z = manifold.projx(z)
+        z_next = manifold.expmap(z_prev, u)
+
+        if i < (steps - 1):
+            noise = torch.randn_like(z_next) * 0.01 * torch.sqrt(torch.tensor(dt))
+            noise = manifold.proju(z_next, noise)
+            z_next = manifold.expmap(z_next, noise)
+
+        z_next = manifold.projx(z_next)
 
         if RUNTIME_STATS:
-            print("Velocity norm:", u.norm(dim=-1).mean())
-            measure_manifold_distance(z, z_prev, "Step Distance")
-        z_prev = z
+            print(f"Step {i} | Drift: {u.norm().mean():.4f} | Diff: {noise.norm().mean() if i < steps-1 else 0:.4f}")
+            measure_manifold_distance(z_next, z_prev, "Step Distance")
+        z_prev = z_next
 
     measure_manifold_distance(z_prev, z_start, "Start vs End")
     return z_prev

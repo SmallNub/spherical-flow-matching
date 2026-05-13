@@ -8,8 +8,8 @@ INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small
 OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/processed_dataset.npz"
 
 STD_DEVS = 2.0
-SQUEEZE_DATA = False
-SQUEEZE_ALPHA = 0.2
+SQUEEZE_DATA = True
+SQUEEZE_ALPHA = 0.0
 
 manifold = Sphere()
 

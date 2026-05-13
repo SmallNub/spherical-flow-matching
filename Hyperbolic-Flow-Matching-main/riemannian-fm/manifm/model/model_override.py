@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from manifm.model.arch import ACTFNS
 import manifm.model.diffeq_layers as diffeq_layers
 
@@ -57,26 +58,55 @@ class FlowModelOverride(nn.Module):
 
 
 class LinearBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, actfn, cond_dim, dropout=0.1):
+    def __init__(self, in_dim, out_dim, actfn, cond_dim, dropout=0.1, num_heads=8):
         super().__init__()
-        self.norm = NormLayer(in_dim)
+        # 1. AdaLN & Transform Components
+        self.norm1 = NormLayer(in_dim)
+        self.ada_params = nn.Linear(cond_dim, 3 * in_dim)
+
         self.linear = diffeq_layers.ConcatLinear_v2(in_dim, out_dim)
         self.actfn = actfn(out_dim)
-        self.film = FiLM(cond_dim, out_dim)
         self.dropout = nn.Dropout(dropout)
-        self.gate = nn.Linear(cond_dim, out_dim)
-        torch.nn.init.zeros_(self.gate.weight)
-        torch.nn.init.zeros_(self.gate.bias)
+
+        # 2. Flash Cross-Attention Components
+        # We use a second norm for the attention path
+        self.norm2 = NormLayer(out_dim)
+        self.attn = CrossAttention(out_dim, cond_dim, num_heads=num_heads)
+
+        # Additional gating for the attention contribution
+        self.attn_gate = nn.Linear(cond_dim, out_dim)
+
+        # Initialization
+        torch.nn.init.zeros_(self.ada_params.weight)
+        torch.nn.init.zeros_(self.ada_params.bias)
+        torch.nn.init.zeros_(self.attn_gate.weight)
+        torch.nn.init.zeros_(self.attn_gate.bias)
 
     def forward(self, t, x, y):
+        # --- Stage 1: Adaptive Transform (AdaLN) ---
+        # gamma/beta modulate the norm, alpha gates the transform residual
+        gamma, beta, alpha = self.ada_params(y).chunk(3, dim=-1)
+
         residual = x
-        x = self.norm(x)
+        x = self.norm1(x)
+        x = x * (1 + gamma) + beta  # Modulate
+
         x = self.linear(t, x)
-        x = self.film(x, y)
         x = self.actfn(t, x)
         x = self.dropout(x)
-        x = residual + self.gate(y).tanh() * x
-        return x
+
+        # Apply the first gated residual
+        x = residual + alpha.tanh() * x
+
+        # --- Stage 2: Contextual Refinement (Flash Attention) ---
+        # We query the context 'y' to refine the high-dimensional direction
+        attn_residual = x
+        attn_out = self.attn(self.norm2(x), y)
+
+        # Use a secondary gate for the attention path
+        gamma_attn = self.attn_gate(y).tanh()
+
+        return attn_residual + gamma_attn * attn_out
 
 
 class Stem(nn.Module):
@@ -104,10 +134,11 @@ class Stem(nn.Module):
     def forward(self, t, x, y):
         if y is None:
             y = torch.zeros((x.shape[0],), dtype=torch.long, device=x.device)
-
-        elif self.training and self.null_chance > 0:
-            mask = torch.rand_like(y.float()) < self.null_chance
+        else:
             y = y + 1
+
+        if self.training and self.null_chance > 0:
+            mask = torch.rand_like(y, dtype=torch.float) < self.null_chance
             y[mask] = 0
 
         y_emb = self.class_embed(y)
@@ -194,3 +225,47 @@ class SinusoidalTimeEmbedding(nn.Module):
             emb[:, -1] = 0.0
 
         return emb
+
+
+class CrossAttention(nn.Module):
+    def __init__(self, dim, cond_dim, num_heads=8):
+        super().__init__()
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+
+        # Query projection for the manifold data
+        self.to_q = nn.Linear(dim, dim, bias=False)
+        # Key/Value projections for the conditioning signal
+        self.to_kv = nn.Linear(cond_dim, dim * 2, bias=False)
+
+        self.to_out = nn.Linear(dim, dim)
+        nn.init.zeros_(self.to_out.weight)
+        nn.init.zeros_(self.to_out.bias)
+
+    def forward(self, x, cond):
+        B, D = x.shape
+        # x: [B, 1, D], cond: [B, 1, cond_dim]
+        q = self.to_q(x.unsqueeze(1))
+        kv = self.to_kv(cond.unsqueeze(1))
+
+        # Reshape for multi-head attention
+        # [B, 1, H, head_dim]
+        q = q.view(B, 1, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # [B, 1, 2, H, head_dim] -> split to k, v
+        kv = kv.view(B, 1, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]
+
+        # Use PyTorch's optimized dispatcher (Flash Attention 2 / Memory Efficient)
+        # This function handles the scaling (1/sqrt(dk)) internally
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=False
+        )
+
+        # Recombine heads
+        out = out.transpose(1, 2).reshape(B, D)
+        return self.to_out(out)

@@ -29,21 +29,33 @@ class SphereEncodingDataset(Dataset):
         self.labels = torch.from_numpy(data["labels"]).long()
 
         split_ids = torch.from_numpy(data["split_ids"]).long()
-        train_mask = split_ids == 0
+        # self.class_means = torch.from_numpy(data["class_means"]).float()
+        # self.std = 0.01
 
+        train_mask = split_ids == 0
         self.data = self.data[train_mask].clone()
         self.labels = self.labels[train_mask].clone()
 
         self.manifold = Sphere()
         self.dim = self.data.shape[1]
+        self.noisy_target_chance = 0.1
+        self.noisy_std = 0.01
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         x1 = self.data[idx]
-        x0 = self.manifold.random_uniform(1, self.dim).squeeze(0)
         y = self.labels[idx]
+
+        x0 = self.manifold.random_uniform(1, self.dim).squeeze(0)
+        mask = torch.rand_like(y, dtype=torch.float) < self.noisy_target_chance
+        x0[mask] = self.manifold.projx(x1[mask] + torch.randn_like(x1[mask]) * self.noisy_std)
+
+        # mean = self.class_means[y]
+        # noise = torch.randn_like(x1) * self.std
+        # x0 = -mean + noise
+        # x0 = self.manifold.projx(x0)
 
         return {"x0": x0, "x1": x1, "y": y}
 

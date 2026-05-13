@@ -620,23 +620,6 @@ class ManifoldFMLitModule(pl.LightningModule):
             x_t = x_t.reshape(N, self.dim)
             u_t = u_t.reshape(N, self.dim)
 
-            # t = torch.rand(N, 1, device=x1.device, dtype=x1.dtype)
-
-            # x_t_list = []
-            # u_t_list = []
-
-            # for i in range(N):
-            #     path = geodesic(self.manifold, x0[i], x1[i])
-
-            #     ti = t[i]  # shape [1]
-            #     xi, ui = jvp(path, (ti,), (torch.ones_like(ti),))
-
-            #     x_t_list.append(xi)
-            #     u_t_list.append(ui)
-
-            # x_t = torch.cat(x_t_list, dim=0)  # [N, dim]
-            # u_t = torch.cat(u_t_list, dim=0)
-
         diff = self.vecfield(t, x_t, y) - u_t
         return self.manifold.inner(x_t, diff, diff).mean() / self.dim
 

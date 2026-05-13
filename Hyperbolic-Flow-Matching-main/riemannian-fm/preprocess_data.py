@@ -8,7 +8,7 @@ INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small
 OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/processed_dataset.npz"
 
 STD_DEVS = 2.0
-SQUEEZE_DATA = True
+SQUEEZE_DATA = False
 SQUEEZE_ALPHA = 0.2
 
 manifold = Sphere()
@@ -105,9 +105,9 @@ def remove_manifold_outliers(z, labels, std_devs=2.0):
 def main():
     data = np.load(INPUT_PATH, allow_pickle=False)
 
-    z_input = torch.from_numpy(data["encodings"]).float()
-    labels = torch.from_numpy(data["labels"]).long()
-    split_ids = torch.from_numpy(data["split_ids"]).long()
+    z_input = torch.from_numpy(data["encodings"]).float().to(DEVICE)
+    labels = torch.from_numpy(data["labels"]).long().to(DEVICE)
+    split_ids = torch.from_numpy(data["split_ids"]).long().to(DEVICE)
     split_names = data["split_names"].tolist()
 
     print("Processing...")
@@ -147,7 +147,7 @@ def main():
     )
 
     if class_means is not None:
-        output["class_means"] = class_means.cpu().numpy()
+        output["class_means"] = np.array([mean.cpu().numpy() for mean in class_means.values()])
 
     np.savez_compressed(
         OUTPUT_PATH,

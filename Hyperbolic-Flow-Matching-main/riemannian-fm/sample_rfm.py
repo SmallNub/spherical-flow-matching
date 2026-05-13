@@ -17,14 +17,14 @@ NOISE_STD = 1.0
 START_T = 0.0
 GUIDANCE_SCALE = 3.0
 
-SQUEEZE = True
+SQUEEZE = False
 SQUEEZE_ALPHA = 0.2
 
 GENERATION = True
 INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.npz"
 OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.npz"
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.12/214840"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.13/141325"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -65,7 +65,7 @@ def get_v(t_val, x, y=None):
     return model.vecfield(t, x, y=y)
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDANCE_SCALE, null_label=0):
     """Generic Euler integrator for the manifold flow."""
     labels = labels.to(DEVICE)
@@ -107,7 +107,7 @@ def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDA
     return z_prev
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def improve_encodings(
     input_path,
     noise_std=NOISE_STD,

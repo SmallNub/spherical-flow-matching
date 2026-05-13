@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+import gc
 import json
 import argparse
 import logging
@@ -87,6 +88,7 @@ def find_checkpoint(path):
 # -------------------------------------------------
 # MAIN
 # -------------------------------------------------
+@torch.inference_mode()
 def main(cli_args):
     # -------------------------------------------------
     # LOAD CONFIG
@@ -177,47 +179,107 @@ def main(cli_args):
     # -------------------------------------------------
     # DATASET SETUP
     # -------------------------------------------------
+
     transform = transforms.Compose([
-        transforms.Resize(args.image_size),
+        transforms.Resize((args.image_size, args.image_size)),
         transforms.ToTensor(),
-        transforms.Normalize([0.5]*3, [0.5]*3),
+        transforms.Normalize([0.5] * 3, [0.5] * 3),
     ])
 
-    if args.dataset_name in ["cifar-10", "cifar-100"]:
-        dataset_cls = datasets.__dict__[args.dataset_name.upper().replace("-", "")]
+    is_cifar = args.dataset_name in ["cifar-10", "cifar-100"]
+    is_animal_faces = args.dataset_name == "animal-faces"
+
+    # -------------------------------------------------
+    # DATASET CLASS
+    # -------------------------------------------------
+
+    if is_cifar:
+
+        dataset_cls = datasets.__dict__[
+            args.dataset_name.upper().replace("-", "")
+        ]
+
+    elif is_animal_faces:
+
+        dataset_cls = datasets.ImageFolder
+
     else:
+
         dataset_cls = ListDataset
 
+
+    # -------------------------------------------------
+    # SPLITS
+    # -------------------------------------------------
+
     splits = []
-    if args.split == "all":
-        if args.dataset_name in ["cifar-10", "cifar-100"]:
+
+    if is_cifar:
+
+        if args.split == "all":
             splits = [("train", True), ("test", False)]
-        else:
-            splits = [("data", True)]
+
+        elif args.split == "train":
+            splits = [("train", True)]
+
+        elif args.split == "test":
+            splits = [("test", False)]
+
+    elif is_animal_faces:
+
+        if args.split == "all":
+            splits = ["train", "val"]
+
+        elif args.split == "train":
+            splits = ["train"]
+
+        elif args.split == "test":
+            splits = ["val"]
+
     else:
-        if args.dataset_name in ["cifar-10", "cifar-100"]:
-            splits = [(args.split, args.split == "train")]
-        else:
-            splits = [("data", True)]
+
+        splits = ["data"]
+
 
     # -------------------------------------------------
     # ENCODING
     # -------------------------------------------------
+
     all_encodings = []
     all_labels = []
     all_split_ids = []
 
-    for split_id, (split_name, is_train) in enumerate(splits):
+    for split_id, split_name in enumerate(splits):
+
         logger.info(f"Encoding split: {split_name}")
 
-        if dataset_cls != ListDataset:
+        # -------------------------------------------------
+        # CIFAR
+        # -------------------------------------------------
+        if is_cifar:
+
             dataset = dataset_cls(
                 root=args.data_path,
-                train=is_train,
+                train=(split_name == "train"),
                 transform=transform,
                 download=False,
             )
+
+        # -------------------------------------------------
+        # ANIMAL FACES
+        # -------------------------------------------------
+        elif is_animal_faces:
+
+            dataset = dataset_cls(
+                root=osp.join(args.data_path, split_name),
+                transform=transform,
+            )
+
+        # -------------------------------------------------
+        # CUSTOM LIST DATASET
+        # -------------------------------------------------
         else:
+
             dataset = dataset_cls(
                 root=args.data_path,
                 transform=transform,
@@ -225,6 +287,11 @@ def main(cli_args):
                 load_from_zip=args.load_from_zip,
             )
 
+        logger.info(f"Dataset size: {len(dataset)}")
+
+        # -------------------------------------------------
+        # DATALOADER
+        # -------------------------------------------------
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=args.batch_size,
@@ -233,37 +300,57 @@ def main(cli_args):
             pin_memory=True,
         )
 
+        # -------------------------------------------------
+        # ENCODE
+        # -------------------------------------------------
         for batch in tqdm(loader, desc=f"{split_name}"):
+
             if isinstance(batch, (list, tuple)):
                 x, y = batch
-                y = y.to(device, non_blocking=True)
+
+                if y is not None:
+                    y = y.to(device, non_blocking=True)
+
             else:
-                x, y = batch, None
+                x = batch
+                y = None
 
             x = x.to(device, non_blocking=True)
 
-            with torch.autocast(device_type="cuda", dtype=ptdtype):
+            with torch.autocast(
+                device_type="cuda",
+                dtype=ptdtype
+            ):
+
                 z = model.encoder(x, y)
                 z = model.spherify(z, sampling=False)
 
-            z = z.cpu()
-
-            z = z.to(target_dtype)
+            z = z.cpu().to(target_dtype)
 
             all_encodings.append(z)
 
             if y is not None:
+
                 y_cpu = y.cpu()
+
                 all_labels.append(y_cpu)
+
                 all_split_ids.append(
-                    torch.full((y_cpu.shape[0],), split_id, dtype=torch.long)
+                    torch.full(
+                        (y_cpu.shape[0],),
+                        split_id,
+                        dtype=torch.long
+                    )
                 )
 
             torch.cuda.empty_cache()
-
     # -------------------------------------------------
     # SAVE
     # -------------------------------------------------
+    del model, ema_model, dataset, loader
+    gc.collect()
+    torch.cuda.empty_cache()
+
     encodings = torch.cat(all_encodings, dim=0)
 
     output = {

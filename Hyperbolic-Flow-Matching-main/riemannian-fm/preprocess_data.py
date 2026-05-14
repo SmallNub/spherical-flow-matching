@@ -4,11 +4,11 @@ from manifm.manifolds import Sphere
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.npz"
-OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/processed_dataset.npz"
+INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-animal-faces-256px/encoding/encoded_dataset.npz"
+OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-animal-faces-256px/encoding/processed_dataset.npz"
 
 STD_DEVS = 2.0
-SQUEEZE_DATA = True
+SQUEEZE_DATA = False
 SQUEEZE_ALPHA = 0.0
 
 manifold = Sphere()

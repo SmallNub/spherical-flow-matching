@@ -21,8 +21,8 @@ SQUEEZE = False
 SQUEEZE_ALPHA = 0.2
 
 GENERATION = True
-INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/encoded_dataset.npz"
-OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-cifar-10-32px/encoding/output_encodings.npz"
+INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-animal-faces-256px/encoding/encoded_dataset.npz"
+OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-animal-faces-256px/encoding/output_encodings.npz"
 
 RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.13/230210"
 

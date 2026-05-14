@@ -76,13 +76,48 @@ def set_seed(seed, deterministic=False):
 def find_checkpoint(path):
     if os.path.isfile(path):
         return path
+
     elif os.path.isdir(path):
-        files = sorted([f for f in os.listdir(path) if f.endswith(".pth")])
+        files = sorted([
+            f for f in os.listdir(path)
+            if f.endswith(".pth")
+        ])
+
         if not files:
             raise FileNotFoundError(f"No .pth files in {path}")
+
         return os.path.join(path, files[-1])
+
     else:
         raise FileNotFoundError(path)
+
+
+# -------------------------------------------------
+# APPEND TO TEMP FILE
+# -------------------------------------------------
+def append_to_temp_file(tmp_path, enc, labels=None, splits=None):
+
+    if os.path.exists(tmp_path):
+
+        old = torch.load(tmp_path)
+
+        enc = torch.cat([old["enc"], enc], dim=0)
+
+        if labels is not None:
+            labels = torch.cat([old["labels"], labels], dim=0)
+
+        if splits is not None:
+            splits = torch.cat([old["splits"], splits], dim=0)
+
+    torch.save(
+        {
+            "enc": enc,
+            "labels": labels,
+            "splits": splits,
+        },
+        tmp_path,
+        _use_new_zipfile_serialization=True
+    )
 
 
 # -------------------------------------------------
@@ -90,28 +125,23 @@ def find_checkpoint(path):
 # -------------------------------------------------
 @torch.inference_mode()
 def main(cli_args):
-    # -------------------------------------------------
-    # LOAD CONFIG
-    # -------------------------------------------------
+
     exp_dir = osp.dirname(cli_args.checkpoint)
     cfg_path = osp.join(exp_dir, "cfg.json")
 
     logger.info(f"Loading config from {cfg_path}")
+
     with open(cfg_path, "r") as f:
         cfg_args = json.load(f)
 
     cfg_args.update(vars(cli_args))
     args = SimpleNamespace(**cfg_args)
 
-    # -------------------------------------------------
-    # SEED
-    # -------------------------------------------------
     set_seed(args.seed, args.deterministic)
 
-    # -------------------------------------------------
-    # DEVICE / DTYPE
-    # -------------------------------------------------
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -120,7 +150,10 @@ def main(cli_args):
         "float32": torch.float32,
         "bfloat16": torch.bfloat16,
         "float16": torch.float16,
-    }.get(getattr(args, "dtype", "bfloat16"), torch.bfloat16)
+    }.get(
+        getattr(args, "dtype", "bfloat16"),
+        torch.bfloat16
+    )
 
     target_dtype = {
         "float32": torch.float32,
@@ -132,8 +165,22 @@ def main(cli_args):
     # OUTPUT
     # -------------------------------------------------
     output_dir = args.output_path or args.data_path
+
     os.makedirs(output_dir, exist_ok=True)
-    output_file = osp.join(output_dir, args.output_name)
+
+    output_file = osp.join(
+        output_dir,
+        args.output_name
+    )
+
+    tmp_pt = output_file.replace(
+        ".npz",
+        "_stream.pt"
+    )
+
+    # remove stale temp file
+    if os.path.exists(tmp_pt):
+        os.remove(tmp_pt)
 
     # -------------------------------------------------
     # MODEL
@@ -153,13 +200,16 @@ def main(cli_args):
         vit_enc_latent_mlp_mixer_depth=args.vit_enc_latent_mlp_mixer_depth,
         vit_dec_latent_mlp_mixer_depth=args.vit_dec_latent_mlp_mixer_depth,
         affine_latent_mlp_mixer=args.affine_latent_mlp_mixer,
+    ).to(
+        device=device,
+        dtype=ptdtype,
+        memory_format=torch.channels_last
     )
-
-    model.to(device=device, dtype=ptdtype, memory_format=torch.channels_last)
 
     ema_model = SimpleEMA(model)
 
     ckpt_path = find_checkpoint(args.checkpoint)
+
     logger.info(f"Loading checkpoint: {ckpt_path}")
 
     load_ckpt(
@@ -177,21 +227,22 @@ def main(cli_args):
     model.eval().requires_grad_(False)
 
     # -------------------------------------------------
-    # DATASET SETUP
+    # DATASET
     # -------------------------------------------------
-
     transform = transforms.Compose([
         transforms.Resize((args.image_size, args.image_size)),
         transforms.ToTensor(),
         transforms.Normalize([0.5] * 3, [0.5] * 3),
     ])
 
-    is_cifar = args.dataset_name in ["cifar-10", "cifar-100"]
-    is_animal_faces = args.dataset_name == "animal-faces"
+    is_cifar = args.dataset_name in [
+        "cifar-10",
+        "cifar-100"
+    ]
 
-    # -------------------------------------------------
-    # DATASET CLASS
-    # -------------------------------------------------
+    is_animal_faces = (
+        args.dataset_name == "animal-faces"
+    )
 
     if is_cifar:
 
@@ -207,77 +258,79 @@ def main(cli_args):
 
         dataset_cls = ListDataset
 
-
     # -------------------------------------------------
     # SPLITS
     # -------------------------------------------------
-
     splits = []
 
     if is_cifar:
 
         if args.split == "all":
-            splits = [("train", True), ("test", False)]
+            splits = [
+                ("train", True),
+                ("test", False)
+            ]
 
-        elif args.split == "train":
-            splits = [("train", True)]
-
-        elif args.split == "test":
-            splits = [("test", False)]
+        else:
+            splits = [
+                (args.split, args.split == "train")
+            ]
 
     elif is_animal_faces:
 
         if args.split == "all":
-            splits = ["train", "val"]
+            splits = [
+                ("train", True),
+                ("val", False)
+            ]
 
         elif args.split == "train":
-            splits = ["train"]
+            splits = [("train", True)]
 
-        elif args.split == "test":
-            splits = ["val"]
+        else:
+            splits = [("val", False)]
 
     else:
 
-        splits = ["data"]
-
+        splits = [("data", True)]
 
     # -------------------------------------------------
-    # ENCODING
+    # STREAMING ENCODE
     # -------------------------------------------------
+    chunk_size = 50
 
-    all_encodings = []
-    all_labels = []
-    all_split_ids = []
+    enc_list = []
+    label_list = []
+    split_list = []
 
-    for split_id, split_name in enumerate(splits):
+    total_samples = 0
+
+    for split_id, (split_name, train_flag) in enumerate(splits):
 
         logger.info(f"Encoding split: {split_name}")
 
         # -------------------------------------------------
-        # CIFAR
+        # DATASET
         # -------------------------------------------------
         if is_cifar:
 
             dataset = dataset_cls(
                 root=args.data_path,
-                train=(split_name == "train"),
+                train=train_flag,
                 transform=transform,
                 download=False,
             )
 
-        # -------------------------------------------------
-        # ANIMAL FACES
-        # -------------------------------------------------
         elif is_animal_faces:
 
             dataset = dataset_cls(
-                root=osp.join(args.data_path, split_name),
+                root=osp.join(
+                    args.data_path,
+                    split_name
+                ),
                 transform=transform,
             )
 
-        # -------------------------------------------------
-        # CUSTOM LIST DATASET
-        # -------------------------------------------------
         else:
 
             dataset = dataset_cls(
@@ -290,7 +343,7 @@ def main(cli_args):
         logger.info(f"Dataset size: {len(dataset)}")
 
         # -------------------------------------------------
-        # DATALOADER
+        # LOADER
         # -------------------------------------------------
         loader = torch.utils.data.DataLoader(
             dataset,
@@ -303,19 +356,27 @@ def main(cli_args):
         # -------------------------------------------------
         # ENCODE
         # -------------------------------------------------
-        for batch in tqdm(loader, desc=f"{split_name}"):
+        for batch in tqdm(loader, desc=split_name):
 
             if isinstance(batch, (list, tuple)):
+
                 x, y = batch
 
                 if y is not None:
-                    y = y.to(device, non_blocking=True)
+                    y = y.to(
+                        device,
+                        non_blocking=True
+                    )
 
             else:
+
                 x = batch
                 y = None
 
-            x = x.to(device, non_blocking=True)
+            x = x.to(
+                device,
+                non_blocking=True
+            )
 
             with torch.autocast(
                 device_type="cuda",
@@ -323,54 +384,158 @@ def main(cli_args):
             ):
 
                 z = model.encoder(x, y)
-                z = model.spherify(z, sampling=False)
+                z = model.spherify(
+                    z,
+                    sampling=False
+                )
 
-            z = z.cpu().to(target_dtype)
+            z = (
+                z.detach()
+                .cpu()
+                .to(target_dtype)
+            )
 
-            all_encodings.append(z)
+            enc_list.append(z)
+
+            batch_size_actual = z.shape[0]
+            total_samples += batch_size_actual
 
             if y is not None:
 
                 y_cpu = y.cpu()
 
-                all_labels.append(y_cpu)
+                label_list.append(y_cpu)
 
-                all_split_ids.append(
+                split_list.append(
                     torch.full(
-                        (y_cpu.shape[0],),
+                        (batch_size_actual,),
                         split_id,
                         dtype=torch.long
                     )
                 )
 
-            torch.cuda.empty_cache()
-    # -------------------------------------------------
-    # SAVE
-    # -------------------------------------------------
-    del model, ema_model, dataset, loader
-    gc.collect()
-    torch.cuda.empty_cache()
+            # -------------------------------------------------
+            # FLUSH TO DISK
+            # -------------------------------------------------
+            if len(enc_list) >= chunk_size:
 
-    encodings = torch.cat(all_encodings, dim=0)
+                enc_chunk = torch.cat(
+                    enc_list,
+                    dim=0
+                )
 
-    output = {
-        "encodings": encodings,
-        "labels": torch.cat(all_labels, dim=0) if all_labels else None,
-        "split_ids": torch.cat(all_split_ids, dim=0) if all_split_ids else None,
-        "split_names": [s[0] for s in splits],
-    }
+                label_chunk = (
+                    torch.cat(label_list, dim=0)
+                    if label_list else None
+                )
+
+                split_chunk = (
+                    torch.cat(split_list, dim=0)
+                    if split_list else None
+                )
+
+                append_to_temp_file(
+                    tmp_pt,
+                    enc_chunk,
+                    label_chunk,
+                    split_chunk
+                )
+
+                logger.info(
+                    f"Flushed {total_samples} samples"
+                )
+
+                enc_list = []
+                label_list = []
+                split_list = []
+
+                gc.collect()
+                torch.cuda.empty_cache()
+
+    # -------------------------------------------------
+    # SAVE REMAINING
+    # -------------------------------------------------
+    if len(enc_list) > 0:
+
+        enc_chunk = torch.cat(
+            enc_list,
+            dim=0
+        )
+
+        label_chunk = (
+            torch.cat(label_list, dim=0)
+            if label_list else None
+        )
+
+        split_chunk = (
+            torch.cat(split_list, dim=0)
+            if split_list else None
+        )
+
+        append_to_temp_file(
+            tmp_pt,
+            enc_chunk,
+            label_chunk,
+            split_chunk
+        )
+
+    # -------------------------------------------------
+    # FINALIZE
+    # -------------------------------------------------
+    logger.info("Loading final tensor file...")
+
+    final_data = torch.load(tmp_pt)
+
+    final_enc = final_data["enc"]
+    final_labels = final_data["labels"]
+    final_splits = final_data["splits"]
+
+    logger.info(
+        f"Final tensor shape: {final_enc.shape}"
+    )
+
+    # -------------------------------------------------
+    # SAVE NPZ
+    # -------------------------------------------------
+    logger.info("Converting to NPZ...")
 
     np.savez_compressed(
         output_file,
         allow_pickle=False,
-        encodings=output["encodings"].cpu().float().numpy(),
-        labels=output["labels"].cpu().numpy(),
-        split_ids=output["split_ids"].cpu().numpy(),
-        split_names=np.array(output["split_names"], dtype=str),
+        encodings=final_enc.float().numpy(),
+        labels=(
+            final_labels.numpy()
+            if final_labels is not None else None
+        ),
+        split_ids=(
+            final_splits.numpy()
+            if final_splits is not None else None
+        ),
+        split_names=np.array(
+            [s[0] for s in splits],
+            dtype=str
+        ),
     )
 
+    # -------------------------------------------------
+    # CLEANUP
+    # -------------------------------------------------
+    if os.path.exists(tmp_pt):
+
+        os.remove(tmp_pt)
+
+        logger.info(
+            f"Removed temp file: {tmp_pt}"
+        )
+
+    del model
+    del ema_model
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
     logger.info(f"Saved to {output_file}")
-    logger.info(f"Encodings shape: {encodings.shape}")
+    logger.info(f"Shape: {final_enc.shape}")
 
 
 if __name__ == "__main__":

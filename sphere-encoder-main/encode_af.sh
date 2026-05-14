@@ -6,7 +6,7 @@ python encode_dataset.py \
   --output_path workspace/experiments/sphere-small-small-animal-faces-256px/encoding \
   --output_name encoded_dataset.npz \
   --dataset_name animal-faces \
-  --batch_size 64 \
+  --batch_size 128 \
   --num_workers 8 \
   --seed 42 \
   --deterministic False \

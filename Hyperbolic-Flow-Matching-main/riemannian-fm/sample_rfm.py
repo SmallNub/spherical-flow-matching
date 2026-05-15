@@ -4,6 +4,7 @@ import numpy as np
 from manifm.model_pl import ManifoldFMLitModule
 from omegaconf import OmegaConf
 from preprocess_data import manifold_squeeze
+from configs.config import RAW_DATA_PATH, OUTPUT_DATA_PATH, SQUEEZE_DATA, SQUEEZE_ALPHA
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -17,12 +18,9 @@ NOISE_STD = 1.0
 START_T = 0.0
 GUIDANCE_SCALE = 3.0
 
-SQUEEZE = False
-SQUEEZE_ALPHA = 0.2
-
 GENERATION = True
-INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-animal-faces-256px/encoding/encoded_dataset.npz"
-OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-animal-faces-256px/encoding/output_encodings.npz"
+INPUT_PATH = RAW_DATA_PATH
+OUTPUT_PATH = OUTPUT_DATA_PATH
 
 RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.13/230210"
 
@@ -140,7 +138,7 @@ def improve_encodings(
     z_input = normalize(z_input)
     z_input = manifold.projx(z_input)
 
-    if SQUEEZE:
+    if SQUEEZE_DATA:
         z_input, _ = manifold_squeeze(z_input, labels_input, class_means=class_means, alpha=SQUEEZE_ALPHA, reverse=False)
 
     if CHECK_UNIFORMITY:
@@ -176,7 +174,7 @@ def improve_encodings(
         measure_manifold_distance(z_noise, z_final, text="Noise vs Improved")
         measure_manifold_distance(z_final, z_input, text="Improved vs Original")
 
-    if SQUEEZE:
+    if SQUEEZE_DATA:
         z_final, _ = manifold_squeeze(z_final, labels, class_means=class_means, alpha=SQUEEZE_ALPHA, reverse=True)
 
     return z_final, labels, split_ids, split_names

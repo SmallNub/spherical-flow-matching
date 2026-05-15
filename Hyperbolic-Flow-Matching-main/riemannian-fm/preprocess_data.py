@@ -1,15 +1,13 @@
 import numpy as np
 import torch
 from manifm.manifolds import Sphere
-
+from configs.config import RAW_DATA_PATH, PROC_DATA_PATH, SQUEEZE_DATA, SQUEEZE_ALPHA
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-INPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-animal-faces-256px/encoding/encoded_dataset.npz"
-OUTPUT_PATH = "../../sphere-encoder-main/workspace/experiments/sphere-small-small-animal-faces-256px/encoding/processed_dataset.npz"
+INPUT_PATH = RAW_DATA_PATH
+OUTPUT_PATH = PROC_DATA_PATH
 
 STD_DEVS = 2.0
-SQUEEZE_DATA = False
-SQUEEZE_ALPHA = 0.0
 
 manifold = Sphere()
 

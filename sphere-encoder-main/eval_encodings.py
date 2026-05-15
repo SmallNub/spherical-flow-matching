@@ -12,15 +12,63 @@ import numpy as np
 import torch
 import torch_fidelity
 from tqdm import tqdm
-import PIL as pil
+from PIL import Image
+import torchvision
+import torchvision.transforms.functional as TF
+from torch.utils.data import Dataset
 
 from sphere.model import G
 from sphere.ema import SimpleEMA
 from sphere.utils import load_ckpt
-from sphere.loader import resize_arr
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# -------------------------------------------------
+# Memory-Efficient Custom Datasets
+# -------------------------------------------------
+class ClassSubsetDataset(Dataset):
+    """Wraps a standard dataset and filters it to a single target class label."""
+    def __init__(self, base_dataset, target_class):
+        self.samples = []
+        for img, label in base_dataset:
+            if label == target_class:
+                # Convert PIL Image to uint8 [0, 255] CHW tensor for torch_fidelity
+                tensor_img = TF.pil_to_tensor(img)
+                self.samples.append(tensor_img)
+
+        if len(self.samples) == 0:
+            raise ValueError(f"No samples found for class {target_class} in the base dataset.")
+
+        logger.info(f"Created real reference subset for class {target_class} containing {len(self.samples)} images.")
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        # Directly returns the torch.Tensor
+        return self.samples[idx]
+
+
+class InMemoryImageDataset(Dataset):
+    """Holds decoded images completely in RAM as torch.Tensors for torch_fidelity."""
+    def __init__(self, images=None):
+        self.images = images if images is not None else []
+
+    def append(self, img_tensor):
+        # Expects a torch.Tensor of shape [C, H, W]
+        self.images.append(img_tensor)
+
+    def extend(self, other_dataset):
+        # Correctly pull the list elements out of the underlying dataset object
+        self.images.extend(other_dataset.images)
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        return self.images[idx]
 
 
 # -------------------------------------------------
@@ -30,19 +78,20 @@ parser = argparse.ArgumentParser(description="Decode encodings + eval (split-awa
 
 parser.add_argument("--encoding_path", type=str, required=True)
 parser.add_argument("--checkpoint", type=str, required=True)
-
 parser.add_argument("--output_dir", type=str, default="decoded_eval")
 parser.add_argument("--dataset_name", type=str, default="cifar-10")
-
 parser.add_argument("--batch_size", type=int, default=128)
 parser.add_argument("--use_ema", type=bool, default=True)
 parser.add_argument("--compile_model", type=str2bool, default=True)
-
-parser.add_argument("--dtype", type=str, default="bfloat16",
-                    choices=["float32", "bfloat16", "float16"])
-
+parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "bfloat16", "float16"])
 parser.add_argument("--normalize_latents", type=bool, default=True)
-parser.add_argument("--save_images", type=bool, default=True)
+
+# Added image_size flag to safely fallback on if missing from json configuration
+parser.add_argument("--image_size", type=int, default=32, help="Image resolution dimension.")
+
+# Changed default to False to protect SSDs
+parser.add_argument("--save_images", type=str2bool, default=False,
+                    help="If true, saves images to disk in split/class/ directories. Otherwise, runs purely in-memory.")
 
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--deterministic", type=str2bool, default=False)
@@ -55,7 +104,6 @@ def set_seed(seed, deterministic=False):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-
     if deterministic:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
@@ -63,17 +111,11 @@ def set_seed(seed, deterministic=False):
 
 def load_data(path):
     data = np.load(path, allow_pickle=False)
-
     z_input = torch.from_numpy(data["encodings"]).float()
     labels = torch.from_numpy(data["labels"]).long()
     split_ids = torch.from_numpy(data["split_ids"]).long()
     split_names = data["split_names"].tolist()
-    return (
-        z_input,
-        labels,
-        split_ids,
-        split_names,
-    )
+    return z_input, labels, split_ids, split_names
 
 
 def find_checkpoint(path):
@@ -92,51 +134,32 @@ def get_split_indices(split_ids, target_id):
     return (split_ids == target_id).nonzero(as_tuple=True)[0]
 
 
-@torch.inference_mode()
-def save_image(x, y, batch_idx, save_dir, force_image_size=-1):
-    assert isinstance(x, torch.Tensor)
-    x = x * 255.0
-    x = torch.floor(x).to(torch.uint8)
-    x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
-    x = x.cpu().numpy()
-
-    for i, (img, label) in enumerate(zip(x, y)):
-        image_name = f"label={label}_ord={batch_idx:05d}_idx={i:05d}.png"
-        image_path = os.path.join(save_dir, image_name)
-        image = pil.Image.fromarray(img)
-
-        if force_image_size > 0:
-            image = resize_arr(image, image_size=force_image_size)
-
-        image.save(image_path, format="PNG", compress_level=0)
-
-
 def decode_from_latents(model, z, y=None):
     x = model.decoder(z, y)
-    x = torch.clamp(x * 0.5 + 0.5, 0, 1)
-    return x
+    return torch.clamp(x * 0.5 + 0.5, 0, 1)
 
 
 @torch.inference_mode()
-def decode_and_save(model, z, y, save_dir, args, ptdtype, device):
-    if osp.exists(save_dir):
-        shutil.rmtree(save_dir)
-    os.makedirs(save_dir, exist_ok=True)
+def decode_and_collect(model, z, y, save_dir, args, ptdtype, device):
+    """Decodes latents and returns an InMemoryImageDataset or writes to disk if configured."""
+    if args.save_images:
+        os.makedirs(save_dir, exist_ok=True)
 
+    memory_ds = InMemoryImageDataset()
     num_samples = z.shape[0]
     num_batches = int(np.ceil(num_samples / args.batch_size))
 
-    logger.info(f"Decoding {num_samples} samples → {save_dir}")
-
-    count = 0
+    logger.info(f"Decoding {num_samples} samples...")
     pbar = tqdm(range(num_batches))
+
+    # Retrieve image_size safely
+    image_size = getattr(args, "image_size", 32)
 
     for batch_idx in pbar:
         start = batch_idx * args.batch_size
         end = min(start + args.batch_size, num_samples)
 
         z_batch = z[start:end].to(device)
-
         y_batch = y[start:end].to(device) if y is not None else None
 
         if args.normalize_latents:
@@ -145,45 +168,57 @@ def decode_and_save(model, z, y, save_dir, args, ptdtype, device):
         with torch.autocast(device_type="cuda", dtype=ptdtype):
             x_rec = decode_from_latents(model, z_batch, y_batch)
 
-        count += x_rec.shape[0]
-        pbar.set_description(f"Decoded {count}/{num_samples}")
+        # 1. Standardize formatting into a CPU uint8 tensor [B, C, H, W]
+        x_rec = (x_rec * 255.0).clamp(0, 255).to(torch.uint8).cpu()
+        y_cpu = y_batch.cpu().numpy() if y_batch is not None else [None] * len(x_rec)
 
-        if args.save_images:
-            save_image(
-                x=x_rec,
-                y=y_batch,
-                batch_idx=batch_idx,
-                save_dir=save_dir,
-                force_image_size=args.image_size,
-            )
+        for i, (img_tensor, label) in enumerate(zip(x_rec, y_cpu)):
+            if args.save_images:
+                from sphere.loader import resize_arr
+                # Convert to HWC numpy array just for saving out PIL images
+                img_np = img_tensor.permute(1, 2, 0).numpy()
+                image_name = f"label={label}_ord={batch_idx:05d}_idx={i:05d}.png"
+                image_path = os.path.join(save_dir, image_name)
+                image = Image.fromarray(img_np)
+                if image_size > 0:
+                    image = resize_arr(image, image_size=image_size)
+                image.save(image_path, format="PNG", compress_level=0)
+
+            # Always pass the [C, H, W] torch.Tensor directly to our RAM tracking dataset
+            memory_ds.append(img_tensor)
 
         torch.cuda.empty_cache()
 
-    logger.info("Decoding finished")
+    return memory_ds
 
 
-def run_metrics(img_dir, args, split_name):
-    logger.info(f"Running metrics for split: {split_name}")
+def run_metrics(input1_src, args, eval_name, reference_input2, cache_input2_name=None):
+    logger.info(f"Running metrics for: {eval_name}")
 
-    input2 = None
+    # Keyword arguments for calculate_metrics
+    kwargs = {
+        "input1": input1_src,
+        "input2": reference_input2,
+        "cuda": torch.cuda.is_available(),
+        "batch_size": args.batch_size,
+        "isc": True,  # Inception Score
+        "fid": True,  # Frechet Inception Distance
+        "kid": False, # Kernel Inception Distance, very slow
+        "prc": False, # Precision and Recall, slow
+        "ppl": False, # Perceptual Path Length, requires generator
+        "verbose": True,
+    }
 
-    if args.dataset_name == "cifar-10":
-        input2 = "cifar10-train"
+    # FIX: If input1 is a directory path, allow recursive discovery of class subfolders
+    if isinstance(input1_src, str):
+        kwargs["samples_find_deep"] = True
 
-    metrics = torch_fidelity.calculate_metrics(
-        input1=img_dir,
-        input2=input2,
-        cuda=torch.cuda.is_available(),
-        batch_size=args.batch_size,
-        isc=True,  # Inception Score
-        fid=True,  # Frechet Inception Distance
-        kid=False,  # Kernel Inception Distance, very slow
-        prc=False,  # Precision and Recall, slow
-        ppl=False,  # Perceptual Path Length, requires generator
-        verbose=True,
-    )
+    # If a custom cache slot name is provided, force torch_fidelity to save/load it
+    if cache_input2_name is not None:
+        kwargs["cache_input2_name"] = cache_input2_name
 
-    logger.info(f"[{split_name}] {metrics}")
+    metrics = torch_fidelity.calculate_metrics(**kwargs)
+    logger.info(f"[{eval_name}] {metrics}")
     return metrics
 
 
@@ -192,76 +227,42 @@ def main(cli_args):
     exp_dir = osp.dirname(cli_args.checkpoint)
     cfg_path = osp.join(exp_dir, "cfg.json")
 
-    logger.info(f"Loading config from {cfg_path}")
     with open(cfg_path, "r") as f:
         cfg_args = json.load(f)
 
     cfg_args.update(vars(cli_args))
     args = SimpleNamespace(**cfg_args)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     set_seed(args.seed, args.deterministic)
 
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-
-    ptdtype = {
-        "float32": torch.float32,
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-    }[args.dtype]
-
+    ptdtype = {"float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16}[args.dtype]
     z, y, split_ids, split_names = load_data(args.encoding_path)
 
-    logger.info(f"Encodings: {z.shape}, dtype={z.dtype}")
+    real_cifar10_train = None
+    if args.dataset_name == "cifar-10":
+        logger.info("Loading real CIFAR-10 train set for conditional reference matching...")
+        real_cifar10_train = torchvision.datasets.CIFAR10(root="./workspace/datasets/cifar-10", train=True, download=True)
 
     model = G(
-        input_size=args.image_size,
-        patch_size=args.patch_size,
-        vit_enc_model_size=args.vit_enc_model_size,
-        vit_dec_model_size=args.vit_dec_model_size,
-        token_channels=args.token_channels,
-        num_classes=args.num_classes if args.cond_generator else 0,
-        halve_model_size=args.halve_model_size,
-        spherify_model=args.spherify_model,
-        pixel_head_type=args.pixel_head_type,
-        in_context_size=args.in_context_size,
+        input_size=args.image_size, patch_size=args.patch_size,
+        vit_enc_model_size=args.vit_enc_model_size, vit_dec_model_size=args.vit_dec_model_size,
+        token_channels=args.token_channels, num_classes=args.num_classes if args.cond_generator else 0,
+        halve_model_size=args.halve_model_size, spherify_model=args.spherify_model,
+        pixel_head_type=args.pixel_head_type, in_context_size=args.in_context_size,
         noise_sigma_max_angle=args.noise_sigma_max_angle,
         vit_enc_latent_mlp_mixer_depth=args.vit_enc_latent_mlp_mixer_depth,
         vit_dec_latent_mlp_mixer_depth=args.vit_dec_latent_mlp_mixer_depth,
         affine_latent_mlp_mixer=args.affine_latent_mlp_mixer,
-    )
-
-    model.to(device=device, memory_format=torch.channels_last)
+    ).to(device=device, memory_format=torch.channels_last)
 
     ema_model = SimpleEMA(model)
-
-    ckpt_path = find_checkpoint(args.checkpoint)
-    logger.info(f"Loading checkpoint: {ckpt_path}")
-
-    load_ckpt(
-        model,
-        ckpt_path,
-        ema_model=ema_model,
-        strict=True,
-        override_model_with_ema=args.use_ema,
-        verbose=True,
-    )
+    load_ckpt(model, find_checkpoint(args.checkpoint), ema_model=ema_model, strict=True, override_model_with_ema=args.use_ema)
 
     if args.compile_model:
         model.compile()
-
     model.eval().requires_grad_(False)
 
-    splits_to_eval = []
-
-    if split_ids is not None and split_names is not None:
-        for i, name in enumerate(split_names):
-            splits_to_eval.append((i, name))
-    else:
-        splits_to_eval.append((None, "all"))
-
+    splits_to_eval = [(i, name) for i, name in enumerate(split_names)] if split_ids is not None else [(None, "all")]
     metrics = {}
 
     for split_id, split_name in splits_to_eval:
@@ -269,33 +270,61 @@ def main(cli_args):
 
         if split_id is not None:
             idx = get_split_indices(split_ids, split_id)
-            z_split = z[idx]
-            y_split = y[idx] if y is not None else None
+            z_split, y_split = z[idx], y[idx] if y is not None else None
         else:
             z_split, y_split = z, y
 
         split_dir = osp.join(args.output_dir, f"decoded_{split_name}")
+        if args.save_images and osp.exists(split_dir):
+            shutil.rmtree(split_dir)
 
-        decode_and_save(
-            model,
-            z_split,
-            y_split,
-            split_dir,
-            args,
-            ptdtype,
-            device,
-        )
+        # Initialize the container for the entire split
+        overall_split_ds = InMemoryImageDataset()
 
-        metrics[split_name] = run_metrics(split_dir, args, split_name)
+        # 1. Process Per-Class Evaluation
+        if y_split is not None:
+            unique_classes = torch.unique(y_split)
+            for cls_id in unique_classes:
+                cls_id = cls_id.item()
+                cls_idx = (y_split == cls_id).nonzero(as_tuple=True)[0]
 
+                z_cls, y_cls = z_split[cls_idx], y_split[cls_idx]
+                cls_dir = osp.join(split_dir, f"class_{cls_id}")
+                cls_ds = decode_and_collect(model, z_cls, y_cls, cls_dir, args, ptdtype, device)
+                overall_split_ds.extend(cls_ds)
+
+                cache_name = None
+                if real_cifar10_train is not None:
+                    input2_ref = ClassSubsetDataset(real_cifar10_train, target_class=cls_id)
+                    # Dynamically name the cache slot based on the dataset and class ID
+                    cache_name = f"{args.dataset_name}_train_class_{cls_id}"
+                else:
+                    input2_ref = None
+
+                cls_metric_key = f"{split_name}_class_{cls_id}"
+                metric_input = cls_dir if args.save_images else cls_ds
+
+                # Pass the cache slot name here
+                metrics[cls_metric_key] = run_metrics(
+                    metric_input, args, cls_metric_key, input2_ref, cache_input2_name=cache_name
+                )
+        else:
+            # If no labels, decode the split altogether
+            overall_split_ds = decode_and_collect(model, z_split, y_split, split_dir, args, ptdtype, device)
+
+        # 2. Evaluate Overall Split
+        overall_input2 = "cifar10-train" if args.dataset_name == "cifar-10" else None
+
+        # Pass the filled overall_split_ds dataset container directly
+        metric_input_overall = split_dir if args.save_images else overall_split_ds
+        metrics[split_name] = run_metrics(metric_input_overall, args, split_name, overall_input2)
+
+    # Print out results safely
     logger.info("===== Evaluation Metrics =====")
-
-    for split_name, split_metrics in metrics.items():
-        logger.info("---- %s ----", split_name)
+    for eval_key, split_metrics in metrics.items():
+        logger.info("---- %s ----", eval_key)
         for k, v in split_metrics.items():
             logger.info("%-20s : %s", k, v)
-
-    logger.info("==============================")
 
 
 if __name__ == "__main__":

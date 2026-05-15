@@ -1,6 +1,4 @@
 #!/bin/bash
-# Encode CIFAR-10 dataset using trained sphere encoder
-# Now config-driven (reads cfg.json automatically)
 
 python encode_dataset.py \
   --data_path workspace/datasets/cifar-10 \

@@ -4,7 +4,7 @@ import numpy as np
 from manifm.model_pl import ManifoldFMLitModule
 from omegaconf import OmegaConf
 from preprocess_data import manifold_squeeze
-from configs.config import RAW_DATA_PATH, OUTPUT_DATA_PATH, SQUEEZE_DATA, SQUEEZE_ALPHA
+from configs.config import RAW_DATA_PATH, OUTPUT_DATA_PATH, SPHERE_DIMS, SQUEEZE_DATA, SQUEEZE_ALPHA
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -45,13 +45,15 @@ def dummy_labels(n_samples=50000):
 
 def normalize(z):
     N, T, D = z.shape
+    assert (T, D) == tuple(SPHERE_DIMS), f"Expected shape [N, {SPHERE_DIMS[0]}, {SPHERE_DIMS[1]}], got {z.shape}"
     z = z.reshape(N, T * D)
     z = z / z.norm(dim=-1, keepdim=True)
     return z
 
 
-def unnormalize(z_flat, T=256, D=4):
+def unnormalize(z_flat):
     N = z_flat.shape[0]
+    T, D = SPHERE_DIMS
     z = z_flat.reshape(N, T, D)
     z = z / z.norm(dim=[1, 2], keepdim=True)
     z = z * torch.sqrt(torch.tensor(T * D))

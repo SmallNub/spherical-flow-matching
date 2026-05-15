@@ -1,7 +1,8 @@
+import gc
 import numpy as np
 import torch
 from manifm.manifolds import Sphere
-from configs.config import RAW_DATA_PATH, PROC_DATA_PATH, SQUEEZE_DATA, SQUEEZE_ALPHA
+from configs.config import RAW_DATA_PATH, PROC_DATA_PATH, SPHERE_DIMS, SQUEEZE_DATA, SQUEEZE_ALPHA
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 INPUT_PATH = RAW_DATA_PATH
@@ -14,6 +15,7 @@ manifold = Sphere()
 
 def normalize(z):
     N, T, D = z.shape
+    assert (T, D) == tuple(SPHERE_DIMS), f"Expected shape [N, {SPHERE_DIMS[0]}, {SPHERE_DIMS[1]}], got {z.shape}"
     z = z.reshape(N, T * D)
     z = z / z.norm(dim=-1, keepdim=True)
     return z
@@ -100,18 +102,7 @@ def remove_manifold_outliers(z, labels, std_devs=2.0):
     return z[final_selection], labels[final_selection]
 
 
-def main():
-    data = np.load(INPUT_PATH, allow_pickle=False)
-
-    z_input = torch.from_numpy(data["encodings"]).float().to(DEVICE)
-    labels = torch.from_numpy(data["labels"]).long().to(DEVICE)
-    split_ids = torch.from_numpy(data["split_ids"]).long().to(DEVICE)
-    split_names = data["split_names"].tolist()
-
-    print("Processing...")
-
-    z_input = normalize(z_input)
-
+def process_splits(z_input, labels, split_ids, split_names):
     splits = {split_name: None for split_name in split_names}
     for split_id, split_name in zip(split_ids.unique(), split_names):
         mask = split_ids == split_id
@@ -134,6 +125,25 @@ def main():
     z_all = torch.cat([z_train] + [splits[split_name]["encodings"] for split_name in splits], dim=0)
     labels_all = torch.cat([train_labels] + [splits[split_name]["labels"] for split_name in splits], dim=0)
     split_ids_all = torch.cat([torch.zeros_like(train_labels)] + [splits[split_name]["split_ids"] for split_name in splits], dim=0)
+    return z_all, labels_all, split_ids_all, class_means
+
+
+def main():
+    data = np.load(INPUT_PATH, allow_pickle=False)
+
+    z_input = torch.from_numpy(data["encodings"]).float().to(DEVICE)
+    labels = torch.from_numpy(data["labels"]).long().to(DEVICE)
+    split_ids = torch.from_numpy(data["split_ids"]).long().to(DEVICE)
+    split_names = data["split_names"].tolist()
+
+    print("Processing...")
+
+    z_input = normalize(z_input)
+
+    z_all, labels_all, split_ids_all, class_means = process_splits(z_input, labels, split_ids, split_names)
+    del z_input, labels, split_ids
+    torch.cuda.empty_cache()
+    gc.collect()
 
     print("Saving...")
 

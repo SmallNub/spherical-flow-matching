@@ -5,5 +5,7 @@ RAW_DATA_PATH = DATA_DIR + "encoded_dataset.npz"
 PROC_DATA_PATH = DATA_DIR + "processed_dataset.npz"
 OUTPUT_DATA_PATH = DATA_DIR + "output_encodings.npz"
 
+SPHERE_DIMS = [256, 4]
+
 SQUEEZE_DATA = False
 SQUEEZE_ALPHA = 0.0

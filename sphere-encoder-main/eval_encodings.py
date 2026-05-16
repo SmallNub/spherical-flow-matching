@@ -47,7 +47,6 @@ class ClassSubsetDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        # Directly returns the torch.Tensor
         return self.samples[idx]
 
 
@@ -57,11 +56,9 @@ class InMemoryImageDataset(Dataset):
         self.images = images if images is not None else []
 
     def append(self, img_tensor):
-        # Expects a torch.Tensor of shape [C, H, W]
         self.images.append(img_tensor)
 
     def extend(self, other_dataset):
-        # Correctly pull the list elements out of the underlying dataset object
         self.images.extend(other_dataset.images)
 
     def __len__(self):
@@ -85,11 +82,12 @@ parser.add_argument("--use_ema", type=bool, default=True)
 parser.add_argument("--compile_model", type=str2bool, default=True)
 parser.add_argument("--dtype", type=str, default="bfloat16", choices=["float32", "bfloat16", "float16"])
 parser.add_argument("--normalize_latents", type=bool, default=True)
-
-# Added image_size flag to safely fallback on if missing from json configuration
 parser.add_argument("--image_size", type=int, default=32, help="Image resolution dimension.")
 
-# Changed default to False to protect SSDs
+# TOGGLE CONTROL: Turn on/off per-class evaluation metrics
+parser.add_argument("--eval_per_class", type=str2bool, default=True,
+                    help="If true, computes evaluation metrics for each individual class label separately.")
+
 parser.add_argument("--save_images", type=str2bool, default=False,
                     help="If true, saves images to disk in split/class/ directories. Otherwise, runs purely in-memory.")
 
@@ -152,7 +150,6 @@ def decode_and_collect(model, z, y, save_dir, args, ptdtype, device):
     logger.info(f"Decoding {num_samples} samples...")
     pbar = tqdm(range(num_batches))
 
-    # Retrieve image_size safely
     image_size = getattr(args, "image_size", 32)
 
     for batch_idx in pbar:
@@ -168,14 +165,12 @@ def decode_and_collect(model, z, y, save_dir, args, ptdtype, device):
         with torch.autocast(device_type="cuda", dtype=ptdtype):
             x_rec = decode_from_latents(model, z_batch, y_batch)
 
-        # 1. Standardize formatting into a CPU uint8 tensor [B, C, H, W]
         x_rec = (x_rec * 255.0).clamp(0, 255).to(torch.uint8).cpu()
         y_cpu = y_batch.cpu().numpy() if y_batch is not None else [None] * len(x_rec)
 
         for i, (img_tensor, label) in enumerate(zip(x_rec, y_cpu)):
             if args.save_images:
                 from sphere.loader import resize_arr
-                # Convert to HWC numpy array just for saving out PIL images
                 img_np = img_tensor.permute(1, 2, 0).numpy()
                 image_name = f"label={label}_ord={batch_idx:05d}_idx={i:05d}.png"
                 image_path = os.path.join(save_dir, image_name)
@@ -184,7 +179,6 @@ def decode_and_collect(model, z, y, save_dir, args, ptdtype, device):
                     image = resize_arr(image, image_size=image_size)
                 image.save(image_path, format="PNG", compress_level=0)
 
-            # Always pass the [C, H, W] torch.Tensor directly to our RAM tracking dataset
             memory_ds.append(img_tensor)
 
         torch.cuda.empty_cache()
@@ -194,26 +188,23 @@ def decode_and_collect(model, z, y, save_dir, args, ptdtype, device):
 
 def run_metrics(input1_src, args, eval_name, reference_input2, cache_input2_name=None):
     logger.info(f"Running metrics for: {eval_name}")
-
-    # Keyword arguments for calculate_metrics
+    
     kwargs = {
         "input1": input1_src,
         "input2": reference_input2,
         "cuda": torch.cuda.is_available(),
         "batch_size": args.batch_size,
-        "isc": True,  # Inception Score
-        "fid": True,  # Frechet Inception Distance
-        "kid": False, # Kernel Inception Distance, very slow
-        "prc": False, # Precision and Recall, slow
-        "ppl": False, # Perceptual Path Length, requires generator
+        "isc": True,   # Inception Score
+        "fid": True,   # Frechet Inception Distance
+        "kid": False,  # Kernel Inception Distance, very slow
+        "prc": False,  # Precision and Recall, slow
+        "ppl": False,  # Perceptual Path Length, requires generator
         "verbose": True,
     }
 
-    # FIX: If input1 is a directory path, allow recursive discovery of class subfolders
     if isinstance(input1_src, str):
         kwargs["samples_find_deep"] = True
 
-    # If a custom cache slot name is provided, force torch_fidelity to save/load it
     if cache_input2_name is not None:
         kwargs["cache_input2_name"] = cache_input2_name
 
@@ -281,8 +272,8 @@ def main(cli_args):
         # Initialize the container for the entire split
         overall_split_ds = InMemoryImageDataset()
 
-        # 1. Process Per-Class Evaluation
-        if y_split is not None:
+        # 1. Process Per-Class Evaluation (Only runs if eval_per_class is True)
+        if args.eval_per_class and y_split is not None:
             unique_classes = torch.unique(y_split)
             for cls_id in unique_classes:
                 cls_id = cls_id.item()
@@ -296,7 +287,6 @@ def main(cli_args):
                 cache_name = None
                 if real_cifar10_train is not None:
                     input2_ref = ClassSubsetDataset(real_cifar10_train, target_class=cls_id)
-                    # Dynamically name the cache slot based on the dataset and class ID
                     cache_name = f"{args.dataset_name}_train_class_{cls_id}"
                 else:
                     input2_ref = None
@@ -304,22 +294,19 @@ def main(cli_args):
                 cls_metric_key = f"{split_name}_class_{cls_id}"
                 metric_input = cls_dir if args.save_images else cls_ds
 
-                # Pass the cache slot name here
                 metrics[cls_metric_key] = run_metrics(
                     metric_input, args, cls_metric_key, input2_ref, cache_input2_name=cache_name
                 )
         else:
-            # If no labels, decode the split altogether
+            # If tracking per-class metrics is toggled off, decode the split altogether in one single batch pass
             overall_split_ds = decode_and_collect(model, z_split, y_split, split_dir, args, ptdtype, device)
 
         # 2. Evaluate Overall Split
         overall_input2 = "cifar10-train" if args.dataset_name == "cifar-10" else None
 
-        # Pass the filled overall_split_ds dataset container directly
         metric_input_overall = split_dir if args.save_images else overall_split_ds
         metrics[split_name] = run_metrics(metric_input_overall, args, split_name, overall_input2)
 
-    # Print out results safely
     logger.info("===== Evaluation Metrics =====")
     for eval_key, split_metrics in metrics.items():
         logger.info("---- %s ----", eval_key)

@@ -96,7 +96,7 @@ class LinearBlock(nn.Module):
         x = self.dropout(x)
 
         # Apply the first gated residual
-        x = residual + alpha.tanh() * x
+        x = residual + alpha * x
 
         # --- Stage 2: Contextual Refinement (Flash Attention) ---
         # We query the context 'y' to refine the high-dimensional direction
@@ -104,7 +104,12 @@ class LinearBlock(nn.Module):
         attn_out = self.attn(self.norm2(x), y)
 
         # Use a secondary gate for the attention path
-        gamma_attn = self.attn_gate(y).tanh()
+        gamma_attn = self.attn_gate(y)
+
+        # alpha_gate = alpha.abs().mean().item()
+        # print(f"AdaLN Transform Gate Magnitude: {alpha_gate:.5f}")
+        # attention_gate = gamma_attn.abs().mean().item()
+        # print(f"Cross-Attention Gate Magnitude: {attention_gate:.5f}")
 
         return attn_residual + gamma_attn * attn_out
 
@@ -240,8 +245,6 @@ class CrossAttention(nn.Module):
         self.to_kv = nn.Linear(cond_dim, dim * 2, bias=False)
 
         self.to_out = nn.Linear(dim, dim)
-        nn.init.zeros_(self.to_out.weight)
-        nn.init.zeros_(self.to_out.bias)
 
     def forward(self, x, cond):
         B, D = x.shape

@@ -566,6 +566,24 @@ class ManifoldFMLitModule(pl.LightningModule):
             x0 = batch["x0"]
             x1 = batch["x1"]
             y = batch["y"]
+
+            # init_chance = 0.1
+            # end_chance = 0.5
+            # init_std = 0.1
+            # end_std = 0.001
+            # progress = self.global_step / self.trainer.max_steps
+
+            # # Keep chance linear (or change it too if you want!)
+            # noisy_chance = init_chance + (end_chance - init_chance) * progress
+
+            # # A power of 2 or 3 creates a steep drop at the start
+            # power = 2
+            # decay_factor = (1 - progress) ** power
+
+            # noisy_std = end_std + (init_std - end_std) * decay_factor
+
+            # mask = torch.rand_like(y, dtype=torch.float) < noisy_chance
+            # x0[mask] = self.manifold.projx(x1[mask] + torch.randn_like(x1[mask]) * noisy_std)
         else:
             x1 = batch
             x0 = self.manifold.random_base(x1.shape[0], self.dim).to(x1)
@@ -610,12 +628,36 @@ class ManifoldFMLitModule(pl.LightningModule):
             u_t = u_t.reshape(N, self.dim)
 
         else:
+            # 1. Initialize uniform time across the whole batch
             t = torch.rand(N).reshape(-1, 1).to(x1)
 
+            # # 2. Check if curriculum corruption was applied in the dict block
+            # # (We detect it by seeing if x0 was clamped close to x1)
+            # with torch.no_grad():
+            #     # On a sphere, if x0 was mutated to x1 + noise, their distance is tiny
+            #     # compared to standard random base pairs (which have an avg dist ~1.41)
+            #     is_corrupted = torch.norm(x0 - x1, dim=-1) < (torch.pi / 4)
+
+            # if is_corrupted.any():
+            #     # Scale time to reflect that these points are already near the destination.
+            #     # Instead of t ~ Unif(0, 1), they get t ~ Unif(0.8, 1.0) based on training progress.
+            #     # This perfectly preserves trajectory consistency!
+            #     init_min_t = 0.3  # Early on, give them more time to move
+            #     end_min_t = 0.8   # Late in training, they must snap back instantly at the very end
+
+            #     progress = self.global_step / self.trainer.max_steps
+            #     min_t = init_min_t + (end_min_t - init_min_t) * progress
+
+            #     # Overwrite t for corrupted items to be in the range [min_t, 1.0]
+            #     corrupted_t = min_t + (1.0 - min_t) * torch.rand(N, 1).to(x1)
+            #     t = torch.where(is_corrupted.reshape(-1, 1), corrupted_t, t)
+
+            # 3. Proceed with standard geodesic mapping
             def cond_u(x0, x1, t):
                 path = geodesic(self.manifold, x0, x1)
                 x_t, u_t = jvp(path, (t,), (torch.ones_like(t).to(t),))
                 return x_t, u_t
+
             x_t, u_t = vmap(cond_u)(x0, x1, t)
             x_t = x_t.reshape(N, self.dim)
             u_t = u_t.reshape(N, self.dim)

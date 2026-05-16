@@ -16,13 +16,16 @@ NUM_CLASSES = 10
 STEPS = 100
 NOISE_STD = 1.0
 START_T = 0.0
-GUIDANCE_SCALE = 3.0
 
+GUIDANCE_SCALE = 1.5
+SDE_NOISE = 0.01
+
+SAVE_OUTPUT = True
 GENERATION = True
 INPUT_PATH = RAW_DATA_PATH
 OUTPUT_PATH = OUTPUT_DATA_PATH
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.13/230210"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.16/172144"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -76,8 +79,14 @@ def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDA
 
     for i in tqdm.tqdm(range(steps), desc="Integrating flow"):
         current_t = start_t + dt * i
+        progress = i / steps
 
-        if guidance_scale != 1.0:
+        if progress < 0.3:
+            current_cfg = 1.0
+        else:
+            current_cfg = 1.0 + (guidance_scale - 1.0) * ((progress - 0.3) / 0.7) ** 2
+
+        if guidance_scale != 1.0 and current_cfg > 1.0:
             z_in = torch.cat([z_prev, z_prev], dim=0)
             y_in = torch.cat([null_labels, labels], dim=0)
 
@@ -92,7 +101,7 @@ def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDA
         z_next = manifold.expmap(z_prev, u)
 
         if i < (steps - 1):
-            noise = torch.randn_like(z_next) * 0.01 * torch.sqrt(torch.tensor(dt))
+            noise = torch.randn_like(z_next) * SDE_NOISE * torch.sqrt(torch.tensor(dt))
             noise = manifold.proju(z_next, noise)
             z_next = manifold.expmap(z_next, noise)
 
@@ -165,8 +174,8 @@ def improve_encodings(
     z_final = integrate_flow(z_noise, labels, steps=STEPS, start_t=start_t)
 
     print("Clustering report:")
-    check_class_clustering(z_input, labels_input, text="Original Class Clustering")
     check_class_clustering(z_noise, labels, text="Noise Class Clustering")
+    check_class_clustering(z_input, labels_input, text="Original Class Clustering")
     check_class_clustering(z_final, labels, text="Final Class Clustering")
 
     if not generation:
@@ -342,13 +351,14 @@ else:
 
 z_final = unnormalize(z_final.cpu())
 
-np.savez_compressed(
-    OUTPUT_PATH,
-    allow_pickle=False,
-    encodings=z_final.cpu().numpy(),
-    labels=labels.cpu().numpy(),
-    split_ids=split_ids.cpu().numpy(),
-    split_names=np.array(split_names, dtype=str),
-)
+if SAVE_OUTPUT:
+    np.savez_compressed(
+        OUTPUT_PATH,
+        allow_pickle=False,
+        encodings=z_final.cpu().numpy(),
+        labels=labels.cpu().numpy(),
+        split_ids=split_ids.cpu().numpy(),
+        split_names=np.array(split_names, dtype=str),
+    )
 
 print(f"Done. Saved shape: {z_final.shape}")

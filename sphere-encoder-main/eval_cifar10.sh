@@ -9,7 +9,8 @@ python eval_encodings.py \
   --use_ema True \
   --dtype bfloat16 \
   --normalize_latents True \
-  --save_images True \
+  --eval_per_class False \
+  --save_images False \
   --seed 42 \
   --deterministic False \
   --compile_model True

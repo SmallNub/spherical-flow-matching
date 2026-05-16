@@ -38,8 +38,6 @@ class SphereEncodingDataset(Dataset):
 
         self.manifold = Sphere()
         self.dim = self.data.shape[1]
-        self.noisy_target_chance = 0.1
-        self.noisy_std = 0.01
 
     def __len__(self):
         return len(self.data)
@@ -49,8 +47,6 @@ class SphereEncodingDataset(Dataset):
         y = self.labels[idx]
 
         x0 = self.manifold.random_uniform(1, self.dim).squeeze(0)
-        mask = torch.rand_like(y, dtype=torch.float) < self.noisy_target_chance
-        x0[mask] = self.manifold.projx(x1[mask] + torch.randn_like(x1[mask]) * self.noisy_std)
 
         # mean = self.class_means[y]
         # noise = torch.randn_like(x1) * self.std

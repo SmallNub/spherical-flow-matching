@@ -567,23 +567,25 @@ class ManifoldFMLitModule(pl.LightningModule):
             x1 = batch["x1"]
             y = batch["y"]
 
-            # init_chance = 0.1
-            # end_chance = 0.5
-            # init_std = 0.1
-            # end_std = 0.001
-            # progress = self.global_step / self.trainer.max_steps
+            N = x1.shape[0]
 
-            # # Keep chance linear (or change it too if you want!)
-            # noisy_chance = init_chance + (end_chance - init_chance) * progress
+            # --- SOLUTION C: VARIANCE-BRIDGED INJECTION ---
+            # We train the model on BOTH completely uniform noise (50% of the time)
+            # and highly-localized cluster noise (50% of the time) up to sigma = 0.5.
 
-            # # A power of 2 or 3 creates a steep drop at the start
-            # power = 2
-            # decay_factor = (1 - progress) ** power
+            mix_mask = torch.rand(N, 1, device=x1.device) > 0.5
 
-            # noisy_std = end_std + (init_std - end_std) * decay_factor
+            # 1. Pure Uniform Base (Standard RFM)
+            x0_uniform = self.manifold.random_base(N, self.dim).to(x1)
 
-            # mask = torch.rand_like(y, dtype=torch.float) < noisy_chance
-            # x0[mask] = self.manifold.projx(x1[mask] + torch.randn_like(x1[mask]) * noisy_std)
+            # 2. Localized Cluster Noise (Targeted Denoising Bridge)
+            # We sample a wide range of sigmas up to 0.5 so the model learns the transition
+            random_sigmas = torch.rand(N, 1, device=x1.device) * 0.5
+            x0_local = x1 + torch.randn_like(x1) * random_sigmas
+            x0_local = self.manifold.projx(x0_local)
+
+            # Combine them
+            x0 = torch.where(mix_mask, x0_uniform, x0_local)
         else:
             x1 = batch
             x0 = self.manifold.random_base(x1.shape[0], self.dim).to(x1)
@@ -628,31 +630,21 @@ class ManifoldFMLitModule(pl.LightningModule):
             u_t = u_t.reshape(N, self.dim)
 
         else:
-            # 1. Initialize uniform time across the whole batch
-            t = torch.rand(N).reshape(-1, 1).to(x1)
+            # Keep your Beta(1, 2) time distribution! It is helpful.
+            beta_dist = torch.distributions.Beta(1, 2)
+            t = beta_dist.sample((N, 1)).to(x1)
 
-            # # 2. Check if curriculum corruption was applied in the dict block
-            # # (We detect it by seeing if x0 was clamped close to x1)
-            # with torch.no_grad():
-            #     # On a sphere, if x0 was mutated to x1 + noise, their distance is tiny
-            #     # compared to standard random base pairs (which have an avg dist ~1.41)
-            #     is_corrupted = torch.norm(x0 - x1, dim=-1) < (torch.pi / 4)
+            # --- SOLUTION C (PART 2): TIME BOUNDING FOR LOCAL NOISE ---
+            # If a point was generated via local noise (not uniform), it is starting
+            # out geometrically closer to the destination than a uniform point.
+            # We must restrict its 't' so the model doesn't get confused by clean points at t=0.
+            is_local = ~mix_mask.squeeze(-1)
+            if is_local.any():
+                # Map their time strictly to [0.4, 1.0] instead of [0.0, 1.0]
+                # This prevents trajectory conflicts during training
+                t[is_local] = 0.4 + (1.0 - 0.4) * t[is_local]
 
-            # if is_corrupted.any():
-            #     # Scale time to reflect that these points are already near the destination.
-            #     # Instead of t ~ Unif(0, 1), they get t ~ Unif(0.8, 1.0) based on training progress.
-            #     # This perfectly preserves trajectory consistency!
-            #     init_min_t = 0.3  # Early on, give them more time to move
-            #     end_min_t = 0.8   # Late in training, they must snap back instantly at the very end
-
-            #     progress = self.global_step / self.trainer.max_steps
-            #     min_t = init_min_t + (end_min_t - init_min_t) * progress
-
-            #     # Overwrite t for corrupted items to be in the range [min_t, 1.0]
-            #     corrupted_t = min_t + (1.0 - min_t) * torch.rand(N, 1).to(x1)
-            #     t = torch.where(is_corrupted.reshape(-1, 1), corrupted_t, t)
-
-            # 3. Proceed with standard geodesic mapping
+            # ... Proceed with your exact same geodesic vmap and inner product loss ...
             def cond_u(x0, x1, t):
                 path = geodesic(self.manifold, x0, x1)
                 x_t, u_t = jvp(path, (t,), (torch.ones_like(t).to(t),))
@@ -663,7 +655,10 @@ class ManifoldFMLitModule(pl.LightningModule):
             u_t = u_t.reshape(N, self.dim)
 
         diff = self.vecfield(t, x_t, y) - u_t
-        return self.manifold.inner(x_t, diff, diff).mean() / self.dim
+        loss = self.manifold.inner(x_t, diff, diff)
+        loss = loss * (2 - t)**2
+        loss = loss.mean() / self.dim
+        return loss
 
     def training_step(self, batch: Any, batch_idx: int):
         loss = self.loss_fn(batch)

@@ -4,7 +4,7 @@ import numpy as np
 from manifm.model_pl import ManifoldFMLitModule
 from omegaconf import OmegaConf
 from preprocess_data import manifold_squeeze
-from configs.config import RAW_DATA_PATH, OUTPUT_DATA_PATH, SPHERE_DIMS, SQUEEZE_DATA, SQUEEZE_ALPHA
+from configs.config import PROC_DATA_PATH, OUTPUT_DATA_PATH, SPHERE_DIMS, SQUEEZE_DATA, SQUEEZE_ALPHA
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -14,18 +14,18 @@ RUNTIME_STATS = False
 N_SAMPLES = 10000
 NUM_CLASSES = 10
 STEPS = 100
-NOISE_STD = 1.0
+NOISE_STD = 0.0
 START_T = 0.0
 
 GUIDANCE_SCALE = 1.5
-SDE_NOISE = 0.01
+# SDE_NOISE = 0.01
 
 SAVE_OUTPUT = True
 GENERATION = True
-INPUT_PATH = RAW_DATA_PATH
+INPUT_PATH = PROC_DATA_PATH
 OUTPUT_PATH = OUTPUT_DATA_PATH
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.16/172144"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.16/221419"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -47,6 +47,11 @@ def dummy_labels(n_samples=50000):
 
 
 def normalize(z):
+    try:
+        N, T, D = z.shape
+    except ValueError as e:
+        print("[ERROR]", e)
+        return z
     N, T, D = z.shape
     assert (T, D) == tuple(SPHERE_DIMS), f"Expected shape [N, {SPHERE_DIMS[0]}, {SPHERE_DIMS[1]}], got {z.shape}"
     z = z.reshape(N, T * D)
@@ -71,6 +76,7 @@ def get_v(t_val, x, y=None):
 @torch.inference_mode()
 def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDANCE_SCALE, null_label=-1):
     """Generic Euler integrator for the manifold flow."""
+    z_start = z_start.to(DEVICE)
     labels = labels.to(DEVICE)
     null_labels = torch.full_like(labels, null_label)
 
@@ -79,36 +85,38 @@ def integrate_flow(z_start, labels, steps=100, start_t=0.0, guidance_scale=GUIDA
 
     for i in tqdm.tqdm(range(steps), desc="Integrating flow"):
         current_t = start_t + dt * i
-        progress = i / steps
+        # High guidance at the start (t=0) to force points into class channels,
+        # decaying smoothly to standard guidance as it nears the data destination.
+        # This prevents the model from wandering blindly during the t=0 to 0.5 phase.
+        init_cfg = 5.0      # Aggressive steering at the start
+        target_cfg = 1.1    # Gentle refinement at the end
 
-        if progress < 0.3:
-            current_cfg = 1.0
-        else:
-            current_cfg = 1.0 + (guidance_scale - 1.0) * ((progress - 0.3) / 0.7) ** 2
+        # Decays smoothly from init_cfg to target_cfg as current_t goes 0 -> 1
+        current_cfg = target_cfg + (init_cfg - target_cfg) * (1.0 - current_t)**2
 
         if guidance_scale != 1.0 and current_cfg > 1.0:
-            z_in = torch.cat([z_prev, z_prev], dim=0)
-            y_in = torch.cat([null_labels, labels], dim=0)
+            z_in = torch.cat([z_prev, z_prev], dim=0).to(DEVICE)
+            y_in = torch.cat([null_labels, labels], dim=0).to(DEVICE)
 
             v_all = get_v(current_t, z_in, y=y_in)
             v_uncond, v_cond = v_all.chunk(2, dim=0)
 
-            v = v_uncond + guidance_scale * (v_cond - v_uncond)
+            v = v_uncond + current_cfg * (v_cond - v_uncond)
         else:
             v = get_v(current_t, z_prev, y=labels)
 
         u = dt * v
         z_next = manifold.expmap(z_prev, u)
 
-        if i < (steps - 1):
-            noise = torch.randn_like(z_next) * SDE_NOISE * torch.sqrt(torch.tensor(dt))
-            noise = manifold.proju(z_next, noise)
-            z_next = manifold.expmap(z_next, noise)
+        # if i < (steps - 1):
+        #     noise = torch.randn_like(z_next) * SDE_NOISE * torch.sqrt(torch.tensor(dt))
+        #     noise = manifold.proju(z_next, noise)
+        #     z_next = manifold.expmap(z_next, noise)
 
         z_next = manifold.projx(z_next)
 
         if RUNTIME_STATS:
-            print(f"Step {i} | Drift: {u.norm().mean():.4f} | Diff: {noise.norm().mean() if i < steps-1 else 0:.4f}")
+            print(f"Step {i} | Drift: {u.norm().mean():.4f}")
             measure_manifold_distance(z_next, z_prev, "Step Distance")
         z_prev = z_next
 
@@ -132,6 +140,20 @@ def improve_encodings(
     split_ids = torch.from_numpy(data["split_ids"]).long()
     split_names = data["split_names"].tolist()
     class_means = data.get("class_means", None)
+
+    if class_means is not None:
+        class_means = torch.from_numpy(class_means).squeeze(1).float()
+        print("Loaded class means.")
+
+    if not generation and N_SAMPLES != -1 and z_input.shape[0] > N_SAMPLES:
+        total_samples = z_input.shape[0]
+        permutation = torch.randperm(total_samples)
+
+        subsample_indices = permutation[:N_SAMPLES]
+
+        z_input = z_input[subsample_indices]
+        labels_input = labels_input[subsample_indices]
+        split_ids = split_ids[subsample_indices]
 
     # labels = torch.full((z_noise.shape[0],), 1, dtype=torch.long).to(DEVICE)
 
@@ -160,8 +182,11 @@ def improve_encodings(
     else:
         labels = labels_input
 
-    z_init = manifold.random_base(generation_samples if generation else len(z_input), z_input.shape[-1]).to(DEVICE)
-    z_init = manifold.projx(z_init)
+    z_init = manifold.random_base(generation_samples if generation else len(z_input), z_input.shape[-1])
+    # mean = class_means[labels]
+    # noise = torch.randn((generation_samples, 1024)) * 0.5
+    # z_init = -mean + noise
+    # z_init = manifold.projx(z_init)
 
     if generation:
         z_noise = z_init

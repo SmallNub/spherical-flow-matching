@@ -36,6 +36,20 @@ class SphereEncodingDataset(Dataset):
         self.data = self.data[train_mask].clone()
         self.labels = self.labels[train_mask].clone()
 
+        num_classes = self.labels.max().item() + 1
+
+        class_means = []
+
+        for c in range(num_classes):
+            cls_data = self.data[self.labels == c]
+
+            mean = cls_data.mean(dim=0)
+            mean = mean / mean.norm()
+
+            class_means.append(mean)
+
+        self.class_means = torch.stack(class_means)
+
         self.manifold = Sphere()
         self.dim = self.data.shape[1]
 
@@ -45,6 +59,14 @@ class SphereEncodingDataset(Dataset):
     def __getitem__(self, idx):
         x1 = self.data[idx]
         y = self.labels[idx]
+
+
+        alpha = 0.15
+
+        mean = self.class_means[y]
+
+        x1 = (1 - alpha) * x1 + alpha * mean
+        x1 = self.manifold.projx(x1)
 
         # x0 = x1 + torch.randn_like(x1) * 0.5
         # x0 = self.manifold.projx(x0)

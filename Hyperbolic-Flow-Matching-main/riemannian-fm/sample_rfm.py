@@ -25,7 +25,7 @@ GENERATION = True
 INPUT_PATH = RAW_DATA_PATH
 OUTPUT_PATH = OUTPUT_DATA_PATH
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.16/172144"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.16/222200"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
@@ -172,6 +172,7 @@ def improve_encodings(
 
     print(f"Refining {z_noise.shape[0]} samples...")
     z_final = integrate_flow(z_noise, labels, steps=STEPS, start_t=start_t)
+    # z_final = z_noise.clone() # for sampling directly from sphere encoder
 
     print("Clustering report:")
     check_class_clustering(z_noise, labels, text="Noise Class Clustering")

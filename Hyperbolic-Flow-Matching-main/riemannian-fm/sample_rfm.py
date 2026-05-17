@@ -1,8 +1,8 @@
 import tqdm
 import torch
 import numpy as np
-from manifm.model_pl import ManifoldFMLitModule
 from omegaconf import OmegaConf
+from manifm.model_pl import ManifoldFMLitModule
 from preprocess_data import manifold_squeeze
 from configs.config import PROC_DATA_PATH, OUTPUT_DATA_PATH, SPHERE_DIMS, SQUEEZE_DATA, SQUEEZE_ALPHA
 
@@ -25,7 +25,7 @@ GENERATION = True
 INPUT_PATH = PROC_DATA_PATH
 OUTPUT_PATH = OUTPUT_DATA_PATH
 
-RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.16/221419"
+RUN_DIR = "outputs/runs/sphere_encodings/fm/2026.05.17/202651"
 
 cfg = OmegaConf.load(f"{RUN_DIR}/.hydra/config.yaml")
 ckpt_path = f"{RUN_DIR}/checkpoints/last.ckpt"
